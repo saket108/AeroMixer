@@ -37,6 +37,12 @@ python train_net.py --config-file config_files/videos/aeromixer_videos.yaml
 python test_net.py --config-file config_files/videos/aeromixer_videos.yaml
 ```
 
+Video demo inference:
+
+```bash
+python demo.py --config-file config_files/videos/aeromixer_videos.yaml --video path/to/input.mp4 --output output/video_demo.mp4
+```
+
 Or use script:
 
 ```bash
