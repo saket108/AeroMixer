@@ -19,3 +19,4 @@ backup/
 *.zip
 data_zip/
 data-release
+__pycache__/

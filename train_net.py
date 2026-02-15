@@ -234,14 +234,7 @@ def main():
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
     if args.set_split >= 0:
-        # input
-        if cfg.DATA.DATASETS[0] == 'jhmdb':
-            cfg.JHMDB.CW_SPLIT_FILE = cfg.JHMDB.CW_SPLIT_FILE.format(args.set_split)
-            cfg.JHMDB.OW_SPLIT_FILE = cfg.JHMDB.OW_SPLIT_FILE.format(args.set_split)
-        elif cfg.DATA.DATASETS[0] == 'ucf24':
-            cfg.UCF24.CW_SPLIT_FILE = cfg.UCF24.CW_SPLIT_FILE.format(args.set_split)
-            cfg.UCF24.OW_SPLIT_FILE = cfg.UCF24.OW_SPLIT_FILE.format(args.set_split)
-        # output
+        # Keep split placeholder support for OUTPUT_DIR in custom configs.
         cfg.OUTPUT_DIR = cfg.OUTPUT_DIR.format(args.set_split)
     cfg.freeze()
 

@@ -1,88 +1,141 @@
 # AeroMixer
 
-AeroMixer is our adapted branch of OpenMixer focused on practical training and evaluation for both **video** and **image** detection pipelines.
+AeroMixer supports both image and generic video detection pipelines.
 
-## What We Built
+## What Is Active
 
-- Unified support for **video mode** and **image mode** in one codebase.
-- Added an image-first dataset/evaluation path for detection workflows.
-- Kept video path compatibility (JHMDB/UCF24 configs and scripts).
-- Improved CPU/GPU portability across training, inference, and evaluation.
-- Added flexible text/vocab integration hooks for multimodal experiments.
-
-## Current Capabilities
-
-- Train/evaluate on video datasets (original OpenMixer flow).
-- Train/evaluate on image detection datasets.
-- Run inference on a single image with `demo_image.py`.
-- Run on either CUDA or CPU (CPU is slower).
-
-## Project Layout
-
-- `alphaction/` - core model, dataset, engine, utils.
-- `config_files/` - training/eval configs.
-- `config_files/images/aeromixer_images.yaml` - image mode config.
-- `config_files/jhmdb/`, `config_files/ucf24/` - video mode configs.
-- `third_party/` - helper scripts (evaluation, video IO, maskrcnn helpers).
+- Image pipeline via `ImageDataset`.
+- Generic video pipeline via `VideoDataset` (no AVA/JHMDB/UCF24 required).
+- Same detector/trainer stack for both modes.
 
 ## Setup
 
-Use Python 3.13 (your current environment) or a compatible version.
+Use your current Python environment, then install dependencies:
 
 ```bash
 pip install -r requirements.txt
-pip install tensorboardX supervision imageio
 ```
 
-## Training / Eval
+## Configs
 
-### Image mode
+- Image: `config_files/images/aeromixer_images.yaml`
+- Video: `config_files/videos/aeromixer_videos.yaml`
+
+## Run
+
+### Image
 
 ```bash
 python train_net.py --config-file config_files/images/aeromixer_images.yaml
 python test_net.py --config-file config_files/images/aeromixer_images.yaml
 ```
 
-### Video mode (bash script)
+### Video
 
 ```bash
-bash trainval.sh train jhmdb
-bash trainval.sh eval jhmdb checkpoints/model_final.pth
+python train_net.py --config-file config_files/videos/aeromixer_videos.yaml
+python test_net.py --config-file config_files/videos/aeromixer_videos.yaml
 ```
 
-(Use `ucf24` instead of `jhmdb` when needed.)
+Or use script:
 
-## Dataset Notes
+```bash
+bash trainval.sh train images
+bash trainval.sh eval images checkpoints/model_final.pth
+bash trainval.sh train videos
+bash trainval.sh eval videos checkpoints/model_final.pth
+```
 
-### Video mode
+## Generic Video Dataset Format
 
-- Uses dataset structures expected by JHMDB/UCF24 preprocess/eval tools.
+Set in config:
 
-### Image mode
+- `DATA.PATH_TO_DATA_DIR`: dataset root
+- `DATA.FRAME_DIR`: frame root under dataset root
+- `DATA.DATASETS: ['videos']`
+- `DATA.INPUT_TYPE: 'video'`
 
-- Designed for detection datasets.
-- Supports practical annotation setups used in this repo flow (including YOLO-style and JSON-based metadata usage through dataset adapters).
-- Optional text metadata can be connected for multimodal runs.
+## Video Preprocess Script
 
-## Troubleshooting
+Use the generic script that replaces benchmark-specific preprocess scripts:
 
-If VS Code/Pylance shows unresolved imports:
+Quick test split (placeholders):
 
-1. Select the correct interpreter (Python used for this repo).
-2. Reinstall requirements:
-   - `pip install -r requirements.txt`
-3. For common warnings, ensure these are installed:
-   - `tensorboardX`, `supervision`, `imageio`
+```bash
+python preprocess/prepare_generic_video_dataset.py \
+  --videos-dir data/raw_videos \
+  --output-root data/Videos \
+  --split test \
+  --recursive
+```
 
-If folder rename/move fails on Windows (`EPERM`/"folder in use"):
+Generate both `train.txt` and `test.txt` in one command:
 
-- Close VS Code windows using the repo.
-- Pause/exit OneDrive sync temporarily.
-- Retry rename from parent directory.
+```bash
+python preprocess/prepare_generic_video_dataset.py \
+  --videos-dir data/raw_videos \
+  --output-root data/Videos \
+  --split all \
+  --train-ratio 0.8 \
+  --recursive
+```
 
-## Acknowledgements
+With real labels JSON (single file with `split` field):
 
-Built on top of OpenMixer/STMixer and related open-source dependencies used in this repository.
+```bash
+python preprocess/prepare_generic_video_dataset.py \
+  --videos-dir data/raw_videos \
+  --output-root data/Videos \
+  --split all \
+  --annotation-json data/annotations/all.json \
+  --bbox-format auto \
+  --recursive
+```
+
+With per-split JSON files:
+
+```bash
+python preprocess/prepare_generic_video_dataset.py \
+  --videos-dir data/raw_videos \
+  --output-root data/Videos \
+  --split all \
+  --annotation-json data/annotations/{split}.json \
+  --bbox-format auto \
+  --recursive
+```
+
+Outputs:
+- `data/Videos/frames/<video_id>/<frame_id>.jpg`
+- `data/Videos/train.txt` and/or `data/Videos/test.txt`
+- `data/Videos/annotations/video_id_map.json`
+
+
+Frame layout:
+
+```text
+<PATH_TO_DATA_DIR>/<FRAME_DIR>/<video_id>/<frame_files>
+```
+
+Annotations (choose one):
+
+1) TXT (`train.txt`, `test.txt` or `annotations/train.txt`, `annotations/test.txt`)
+
+```text
+<video_id> <frame_id> <x1> <y1> <x2> <y2> <class_id_or_name>
+```
+
+2) JSON (`<split>.json` or `annotations/<split>.json`)
+
+Each record needs:
+- `video` / `video_id` / `vid`
+- `frame` / `frame_id`
+- `bbox` / `box` / `xyxy` (xyxy)
+- `label` / `class_id` / `category_id` / `class`
+
+## Notes
+
+- Legacy benchmark-specific dataset adapters were removed; use generic `images`/`videos` modes.
+- For video, preprocess your raw videos into frame folders first.
 
 ## License
 

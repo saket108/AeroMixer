@@ -11,10 +11,19 @@ def _is_image_dataset_name(name):
     return str(name).lower() in ["images", "imagefolder", "image"]
 
 
+def _is_video_dataset_name(name):
+    return str(name).lower() in ["videos", "video", "generic_video"]
+
+
 def _is_image_input(cfg):
     if len(cfg.DATA.DATASETS) == 0:
-        return str(getattr(cfg.DATA, "INPUT_TYPE", "video")).lower() == "image"
-    return _is_image_dataset_name(cfg.DATA.DATASETS[0]) or str(getattr(cfg.DATA, "INPUT_TYPE", "video")).lower() == "image"
+        return str(getattr(cfg.DATA, "INPUT_TYPE", "image")).lower() == "image"
+    dataset_name = str(cfg.DATA.DATASETS[0]).lower()
+    if _is_video_dataset_name(dataset_name):
+        return False
+    if _is_image_dataset_name(dataset_name):
+        return True
+    return str(getattr(cfg.DATA, "INPUT_TYPE", "image")).lower() == "image"
 
 
 def _resolve_batch_size(cfg, is_train):
@@ -30,17 +39,20 @@ def _resolve_batch_size(cfg, is_train):
 
 def build_dataset(cfg, split):
     dataset_name = str(cfg.DATA.DATASETS[0]).lower()
+    input_type = str(getattr(cfg.DATA, "INPUT_TYPE", "image")).lower()
 
-    if dataset_name == 'ucf24':
-        dataset = D.UCF24(cfg, split)
-    elif dataset_name == 'jhmdb':
-        dataset = D.Jhmdb(cfg, split)
-    elif dataset_name == 'ava_v2.2':
-        dataset = D.Ava(cfg, split)
-    elif _is_image_dataset_name(dataset_name) or str(getattr(cfg.DATA, "INPUT_TYPE", "video")).lower() == "image":
+    if _is_video_dataset_name(dataset_name):
+        dataset = D.VideoDataset(cfg, split)
+    elif _is_image_dataset_name(dataset_name):
+        dataset = D.ImageDataset(cfg, split)
+    elif input_type == "video":
+        dataset = D.VideoDataset(cfg, split)
+    elif input_type == "image":
         dataset = D.ImageDataset(cfg, split)
     else:
-        raise NotImplementedError("Unsupported dataset '{}'".format(cfg.DATA.DATASETS[0]))
+        raise NotImplementedError(
+            "Unsupported dataset '{}'. Use DATA.DATASETS ['images'] or ['videos'].".format(cfg.DATA.DATASETS[0])
+        )
 
     return [dataset]
 

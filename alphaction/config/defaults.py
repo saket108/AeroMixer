@@ -12,7 +12,7 @@ _C.DATA = CN()
 _C.DATA.PATH_TO_DATA_DIR = ""
 
 # Input mode controls image/video specific assumptions in loaders/eval.
-# Set to "video" when using a custom video dataset adapter.
+# Supported generic modes: "image" and "video".
 _C.DATA.INPUT_TYPE = "image"
 
 # Relative frame/image directory under PATH_TO_DATA_DIR.
@@ -58,6 +58,7 @@ _C.DATA.RANDOM_FLIP = True
 # If True, revert the default input channel (RBG <-> BGR).
 _C.DATA.REVERSE_INPUT_CHANNEL = False
 
+# Use ['images'] for image pipeline, ['videos'] for generic video pipeline.
 _C.DATA.DATASETS = ['images']
 
 _C.DATA.OPEN_VOCABULARY = False
@@ -65,203 +66,9 @@ _C.DATA.OPEN_VOCABULARY = False
 _C.DATA.REFINE_VOCAB = False
 
 # -----------------------------------------------------------------------------
-# AVA Dataset options
+# Legacy benchmark-specific dataset blocks were removed.
+# Generic image/video datasets use DATA + IMAGES sections below.
 # -----------------------------------------------------------------------------
-_C.AVA = CN()
-
-# Directory path of frames.
-_C.AVA.FRAME_DIR = "frames/"
-
-# Directory path for files of frame lists.
-_C.AVA.FRAME_LIST_DIR = "frame_lists/"
-
-
-# Directory path for annotation files.
-_C.AVA.ANNOTATION_DIR = "annotations_v2.2/"
-
-# Directory path for closed-world splits
-_C.AVA.CW_SPLIT_DIR = ""
-
-# Filenames of training samples list files.
-_C.AVA.TRAIN_LISTS = ["train.csv"]
-
-# Filenames of test samples list files.
-_C.AVA.TEST_LISTS = ["val.csv"]
-
-# Filenames of box list files for training. Note that we assume files which
-# contains predicted boxes will have a suffix "predicted_boxes" in the
-# filename.
-_C.AVA.TRAIN_GT_BOX_LISTS = ["ava_train_v2.2.csv"]
-_C.AVA.TEST_GT_BOX_LISTS = ["ava_val_v2.2.csv"]
-_C.AVA.VOCAB_REFINE = 'vocab_refine.json'
-
-# If use BGR as the format of input frames.
-_C.AVA.BGR = False
-
-# Training augmentation parameters
-# Whether to use color augmentation method.
-_C.AVA.TRAIN_USE_COLOR_AUGMENTATION = False
-
-# Whether to only use PCA jitter augmentation when using color augmentation
-# method (otherwise combine with color jitter method).
-_C.AVA.TRAIN_PCA_JITTER_ONLY = True
-
-# Eigenvalues for PCA jittering. Note PCA is RGB based.
-_C.AVA.TRAIN_PCA_EIGVAL = [0.225, 0.224, 0.229]
-
-# Eigenvectors for PCA jittering.
-_C.AVA.TRAIN_PCA_EIGVEC = [
-    [-0.5675, 0.7192, 0.4009],
-    [-0.5808, -0.0045, -0.8140],
-    [-0.5836, -0.6948, 0.4203],
-]
-
-# Whether to do horizontal flipping during test.
-_C.AVA.TEST_FORCE_FLIP = False
-
-_C.AVA.STRICT_EVAL = True
-
-# The name of the file to the ava label map.
-_C.AVA.LABEL_MAP_FILE = "ava_action_list_v2.2_for_activitynet_2019.pbtxt"
-
-# The name of the file to the ava exclusion.
-_C.AVA.EXCLUSION_FILE = "ava_val_excluded_timestamps_v2.2.csv"
-
-# The name of the file to the ava groundtruth.
-_C.AVA.GROUNDTRUTH_FILE = "ava_val_v2.2.csv"
-
-_C.AVA.SINGLE_PROMPT = False
-
-_C.KINETICS = CN()
-
-# Directory path of k700 videos.
-_C.KINETICS.VIDEO_DIR = ""
-
-# Directory path for files of frame lists.
-_C.KINETICS.FRAME_LIST_DIR = "kinetics/frame_lists/"
-
-# Directory path for annotation files.
-_C.KINETICS.ANNOTATION_DIR = "kinetics/annotations/"
-
-# Filenames of training samples list files.
-_C.KINETICS.TRAIN_LISTS = ["train.csv"]
-
-# Filenames of test samples list files.
-_C.KINETICS.TEST_LISTS = ["val.csv"]
-
-# Filenames of box list files for training. Note that we assume files which
-# contains predicted boxes will have a suffix "predicted_boxes" in the
-# filename.
-_C.KINETICS.TRAIN_GT_BOX_LISTS = ["kinetics_train_curated.csv"]
-_C.KINETICS.TEST_GT_BOX_LISTS = ["kinetics_val_curated.csv"]
-
-_C.AK = CN()
-_C.AK.TEST_GT_BOX_LISTS = ["kinetics/ak_val_gt.csv"]
-
-
-# -----------------------------------------------------------------------------
-# JHMDB Dataset options
-# -----------------------------------------------------------------------------
-_C.JHMDB = CN()
-
-# Directory path of frames.
-_C.JHMDB.FRAME_DIR = "Frames/"
-
-# Directory path of optical flows.
-_C.JHMDB.FLOW_DIR = "FlowBrox04/"
-
-# File path of annotations.
-_C.JHMDB.GROUND_TRUTH_FILE = "JHMDB-GT.pkl"
-
-# Directory path of Open-World splits
-_C.JHMDB.OPEN_WORLD_DIR = 'openworld'
-
-# seen/unseen class split
-_C.JHMDB.CW_SPLIT_FILE = 'train50%/closed_world_0.pkl'
-_C.JHMDB.OW_SPLIT_FILE = 'train50%/open_world_0.pkl'
-_C.JHMDB.VOCAB_REFINE = 'vocab_refine.json'
-_C.JHMDB.VOCAB_HN = '' # hard negative texts
-_C.JHMDB.PRIOR_BOX_FILE = ''
-
-# sample list split
-_C.JHMDB.SAMPLES_SPLIT = 0  # [0, 1, 2]
-
-# -----------------------------------------------------------------------------
-# JHMDB Dataset Preprocess
-# -----------------------------------------------------------------------------
-# If use BGR as the format of input frames.
-_C.JHMDB.BGR = False
-
-# Training augmentation parameters
-# Whether to use color augmentation method.
-_C.JHMDB.TRAIN_USE_COLOR_AUGMENTATION = False
-
-# Whether to only use PCA jitter augmentation when using color augmentation
-# method (otherwise combine with color jitter method).
-_C.JHMDB.TRAIN_PCA_JITTER_ONLY = True
-
-# Eigenvalues for PCA jittering. Note PCA is RGB based.
-_C.JHMDB.TRAIN_PCA_EIGVAL = [0.225, 0.224, 0.229]
-
-# Eigenvectors for PCA jittering.
-_C.JHMDB.TRAIN_PCA_EIGVEC = [
-    [-0.5675, 0.7192, 0.4009],
-    [-0.5808, -0.0045, -0.8140],
-    [-0.5836, -0.6948, 0.4203],
-]
-
-# Whether to do horizontal flipping during test.
-_C.JHMDB.TEST_FORCE_FLIP = False
-
-# _C.JHMDB.STRICT_EVAL = True
-
-# -----------------------------------------------------------------------------
-# UCF24 Dataset options
-# -----------------------------------------------------------------------------
-_C.UCF24 = CN()
-
-# Directory path of frames.
-_C.UCF24.FRAME_DIR = "rgb-images"
-
-# Directory path of optical flows.
-_C.UCF24.FLOW_DIR = "brox-images"
-
-# Directory path of Open-World splits
-_C.UCF24.OPEN_WORLD_DIR = 'openworld'
-
-# seen/unseen class split
-_C.UCF24.CW_SPLIT_FILE = 'train50%/closed_world_0.pkl'
-_C.UCF24.OW_SPLIT_FILE = 'train50%/open_world_0.pkl'
-_C.UCF24.VOCAB_REFINE = 'vocab_gpt4.json'
-_C.UCF24.SINGLE_PROMPT = False
-_C.UCF24.PRIOR_BOX_FILE = ''
-
-# -----------------------------------------------------------------------------
-# UCF24 Dataset Preprocess
-# -----------------------------------------------------------------------------
-# If use BGR as the format of input frames.
-_C.UCF24.BGR = False
-
-# Training augmentation parameters
-# Whether to use color augmentation method.
-_C.UCF24.TRAIN_USE_COLOR_AUGMENTATION = False
-
-# Whether to only use PCA jitter augmentation when using color augmentation
-# method (otherwise combine with color jitter method).
-_C.UCF24.TRAIN_PCA_JITTER_ONLY = True
-
-# Eigenvalues for PCA jittering. Note PCA is RGB based.
-_C.UCF24.TRAIN_PCA_EIGVAL = [0.225, 0.224, 0.229]
-
-# Eigenvectors for PCA jittering.
-_C.UCF24.TRAIN_PCA_EIGVEC = [
-    [-0.5675, 0.7192, 0.4009],
-    [-0.5808, -0.0045, -0.8140],
-    [-0.5836, -0.6948, 0.4203],
-]
-
-# Whether to do horizontal flipping during test.
-_C.UCF24.TEST_FORCE_FLIP = False
 
 # -----------------------------------------------------------------------------#
 # Image Dataset preprocess options
@@ -299,7 +106,7 @@ _C.MODEL = CN()
 
 _C.MODEL.WEIGHT = ""
 _C.MODEL.DET = "STMDetector"
-_C.MODEL.MULTI_LABEL_ACTION = True  # AVA actions are multi-label
+_C.MODEL.MULTI_LABEL_ACTION = False
 _C.MODEL.PRE_EXTRACT_FEAT = False
 _C.MODEL.USE_ROI_FEAT = False
 

@@ -1,11 +1,16 @@
 #!/bin/bash
 
 PHASE=$1  # train, eval
-DATASET=$2  # jhmdb, ucf24
+DATASET=${2:-images}  # images, videos
 
-CFG_FILE="config_files/${DATASET}/aeromixer_e2e.yaml"
-# CFG_FILE="config_files/${DATASET}/aeromixer_zsr_tl.yaml"
-# CFG_FILE="config_files/${DATASET}/aeromixer_zsr_zsl.yaml"  # eval-only!
+if [ "$DATASET" = "images" ]; then
+    CFG_FILE="config_files/images/aeromixer_images.yaml"
+elif [ "$DATASET" = "videos" ] || [ "$DATASET" = "video" ]; then
+    CFG_FILE="config_files/videos/aeromixer_videos.yaml"
+else
+    echo "Unsupported DATASET '$DATASET'. Use 'images' or 'videos'."
+    exit 1
+fi
 
 TEST_WEIGHT=${3:-'checkpoints/model_final.pth'}
 
