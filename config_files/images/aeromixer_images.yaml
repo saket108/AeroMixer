@@ -1,0 +1,36 @@
+DATA:
+  INPUT_TYPE: "image"
+  PATH_TO_DATA_DIR: "data/Images"  # put your images and train.txt/test.txt here
+  FRAME_DIR: "images"               # relative path inside PATH_TO_DATA_DIR
+  ANNOTATION_FORMAT: "auto"
+  NUM_FRAMES: 1
+  SAMPLING_RATE: 1
+  MEAN: [0.48145466, 0.4578275, 0.40821073]
+  STD: [0.26862954, 0.26130258, 0.27577711]
+  DATASETS: ['images']
+  OPEN_VOCABULARY: False
+
+MODEL:
+  MULTI_LABEL_ACTION: False
+  BACKBONE:
+    CONV_BODY: "ViT-B/16"   # image backbone (change to ViCLIP/CLIP if available)
+    PATHWAYS: 1
+  STM:
+    TEMPORAL_POINTS: 1
+
+SOLVER:
+  MAX_EPOCH: 12
+  IMAGES_PER_BATCH: 16
+
+TEST:
+  IMAGES_PER_BATCH: 16
+  METRIC: 'image_ap'
+
+IMAGES:
+  BGR: False
+  TRAIN_USE_COLOR_AUGMENTATION: False
+  TEST_FORCE_FLIP: False
+  VOCAB_FILE: ""       # optional: JSON/TXT class->caption mapping
+  VOCAB_OPEN_FILE: ""  # optional: open-set vocab mapping for EVAL_OPEN
+
+OUTPUT_DIR: "output/images/aeromixer_images"
