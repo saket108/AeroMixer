@@ -1,3 +1,5 @@
+import importlib
+
 import torch
 
 #* For CLIP ViT
@@ -16,16 +18,27 @@ def reshape_transform(tensor, height=None, width=None):
     result = result.permute(2, 0, 1)
     return result.unsqueeze(0)
 
+
+def _import_clip_module(prefer_hila=False):
+    if prefer_hila:
+        try:
+            return importlib.import_module("hila_clip.clip")
+        except ModuleNotFoundError:
+            pass
+    return importlib.import_module("clip")
+
+
 def load_clip(clip_version, attn_prob=True, attn_grad=True, attn_last_only=True, resize='adapt', custom=False, model_weight=None):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if 'vit' in clip_version.lower() and not custom: #* This is no necessary, for experimental usage, hila CLIP will hook all attentions.
-        from hila_clip import clip
+        clip = _import_clip_module(prefer_hila=True)
         clip_model, preprocess = clip.load(clip_version, device=device, jit=False)
     
     elif 'clip-vip' in clip_version.lower():
-        import sys, clip
+        import sys
         sys.path.append("../../")
         from alphaction.modeling.encoders.clipvip import loader
+        clip = _import_clip_module(prefer_hila=False)
         clip_model, preprocess = loader.load(clip_version, 
                                              attn_prob=attn_prob,
                                              attn_grad=attn_grad, 
@@ -33,11 +46,11 @@ def load_clip(clip_version, attn_prob=True, attn_grad=True, attn_last_only=True,
                                              device=device, model_weight=model_weight)
 
     elif custom:
-        from hila_clip import clip
+        clip = _import_clip_module(prefer_hila=True)
         clip_model, preprocess = clip.load(clip_version, device=device, jit=False)
 
     else:
-        import clip
+        clip = _import_clip_module(prefer_hila=False)
         clip_model, preprocess = clip.load(clip_version, device=device)
 
     if clip_version.startswith("RN"):
@@ -61,6 +74,7 @@ def load_clip(clip_version, attn_prob=True, attn_grad=True, attn_last_only=True,
         preprocess.transforms.insert(0, transforms.Resize(crop_size))
     # clip_model = torch.nn.DataParallel(clip_model)
     return clip_model, preprocess, target_layer, cam_trans, clip
+
 
 def load_clip_from_checkpoint(checkpoint, model):
     checkpoint = torch.load(checkpoint, map_location='cpu')
