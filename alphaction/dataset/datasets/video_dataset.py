@@ -51,8 +51,13 @@ class VideoDataset(torch.utils.data.Dataset):
 
         self.multilabel_action = cfg.MODEL.MULTI_LABEL_ACTION
         self.test_iou_thresh = cfg.TEST.IOU_THRESH
+        self.independent_eval = cfg.TEST.INDEPENDENT_EVAL
         self.open_vocabulary = cfg.DATA.OPEN_VOCABULARY
         self.eval_open = cfg.TEST.EVAL_OPEN
+        self.use_prior_map = False
+        self.prior_boxes_init = getattr(cfg.MODEL, "PRIOR_BOXES_INIT", "")
+        self.prior_boxes_test = getattr(cfg.TEST, "PRIOR_BOX_TEST", False)
+        self.prior_map = None
         self.text_input = None
         self.vocabulary = {"closed": [], "open": []}
 

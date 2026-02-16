@@ -10,6 +10,26 @@ from .util.loss import SetCriterion, HungarianMatcher
 
 
 
+def _resolve_text_encoder_name(cfg):
+    name = str(getattr(cfg.MODEL, "TEXT_ENCODER", "")).strip()
+    return name if name else "CLIP"
+
+
+def _infer_text_dim(cfg, text_encoder_name):
+    name = str(text_encoder_name).strip()
+    if name.lower() == "clip":
+        arch = str(getattr(cfg.MODEL.CLIP, "ARCH", "")).lower()
+        if "vit-b" in arch or "rn50" in arch or "rn101" in arch:
+            return 512
+        if "vit-l" in arch:
+            return 768
+
+    encoder_cfg = getattr(cfg.MODEL, name, None)
+    if encoder_cfg is None:
+        return int(getattr(cfg.MODEL.STM, "HIDDEN_DIM", 256))
+    return int(getattr(encoder_cfg, "EMBED_DIM", getattr(cfg.MODEL.STM, "HIDDEN_DIM", 256)))
+
+
 class AdaptiveSTSamplingMixing(nn.Module):
 
     def __init__(self, spatial_points=32,
@@ -224,15 +244,28 @@ class AMStage(nn.Module):
         self.samplingmixing.init_weights()
 
 
+    def _align_last_dim(self, tensor, target_dim):
+        current_dim = tensor.size(-1)
+        if current_dim == target_dim:
+            return tensor
+        if current_dim > target_dim:
+            return tensor[..., :target_dim]
+        return F.pad(tensor, (0, target_dim - current_dim), mode='constant', value=0.0)
+
+
     def compute_fused_logits(self, vis_feat, text_feat, cls_feat, labels=None, scale=None, factor=0.1):
         """ vis_feat: (B, N, D)
             text_feat: (K, D)
             cls_feat: (B, D)
         """
+        text_mean = torch.stack(text_feat, dim=0).mean(dim=1) if isinstance(text_feat, list) else text_feat
+        target_dim = text_mean.size(-1)
+
+        vis_feat = self._align_last_dim(vis_feat, target_dim)
+        cls_feat = self._align_last_dim(cls_feat, target_dim)
+
         # cosine angle of learned features
         vis_normed = vis_feat / vis_feat.norm(dim=-1, keepdim=True)
-        text_mean = torch.stack(text_feat, dim=0).mean(dim=1) if isinstance(text_feat, list) else text_feat
-
         text_normed = text_mean / text_mean.norm(dim=-1, keepdim=True)
         cos_learned = vis_normed @ text_normed.transpose(-1, -2)  # (B, N, K)
 
@@ -249,19 +282,23 @@ class AMStage(nn.Module):
 
     def learned_action_head(self, action_feat, text_features=None, tau_inv=100, pretrained_cls=None, labels=None):
         N, n_query = action_feat.shape[:2]
+        text_mean = torch.stack(text_features, dim=0).mean(dim=1) if isinstance(text_features, list) else text_features
+
         # linearly project visual feature into text embedding space
-        action_feat_proj = self.linear_proj(action_feat)  # 512 --> 768
+        action_feat_proj = self.linear_proj(action_feat)
+        action_feat_proj = self._align_last_dim(action_feat_proj, text_mean.size(-1))
+
         if self.fuse_cls:
             if self.fuse_method == 'logit_fusion':
-                logits = self.compute_fused_logits(action_feat_proj, text_features, pretrained_cls, labels=labels, scale=tau_inv)
+                logits = self.compute_fused_logits(action_feat_proj, text_mean, pretrained_cls, labels=labels, scale=tau_inv)
                 action_score = logits * tau_inv
                 return action_score
             else:
-                raise NotImplementedError    
+                raise NotImplementedError
 
         # compute cosine similarity, value in [-1, 1]
-        text_features_normed = text_features / text_features.norm(dim=-1, keepdim=True)  # (K, D=768)
-        vis_features_normed = action_feat_proj / action_feat_proj.norm(dim=-1, keepdim=True)  # (N, n_query, D)
+        text_features_normed = text_mean / text_mean.norm(dim=-1, keepdim=True)
+        vis_features_normed = action_feat_proj / action_feat_proj.norm(dim=-1, keepdim=True)
         action_score = (
             tau_inv * vis_features_normed @ text_features_normed.transpose(-1, -2)
         ).view(N, n_query, -1)  # (N, n_query, K)
@@ -338,9 +375,10 @@ class AMStage(nn.Module):
                 action_score = self.learned_action_head(action_feat, text_features, tau_inv, pretrained_cls=pretrained_cls, labels=labels)  # (N, n_query, K)
             else:
                 # compute cosine similarity, value in [-1, 1]
-                text_features = torch.stack(text_features, dim=0).mean(dim=1) if isinstance(text_features, list) else text_features  # (K, D)
-                text_features_normed = text_features / text_features.norm(dim=-1, keepdim=True)  # (K, D=768)
-                vis_features_normed = vis_cls_feat / vis_cls_feat.norm(dim=-1, keepdim=True)  # (N, D)
+                text_features = torch.stack(text_features, dim=0).mean(dim=1) if isinstance(text_features, list) else text_features
+                vis_features = self._align_last_dim(vis_cls_feat, text_features.size(-1))
+                text_features_normed = text_features / text_features.norm(dim=-1, keepdim=True)
+                vis_features_normed = vis_features / vis_features.norm(dim=-1, keepdim=True)
                 action_score = (
                     tau_inv * vis_features_normed @ text_features_normed.transpose(-1, -2)
                 )
@@ -374,7 +412,13 @@ class STMDecoder(nn.Module):
         
         self._generate_queries(cfg)
 
-        self.cam_sampling = eval('cfg.MODEL.{}.CAM_SAMPLING'.format(cfg.MODEL.TEXT_ENCODER))
+        self.text_encoder_name = _resolve_text_encoder_name(cfg)
+        text_encoder_cfg = getattr(cfg.MODEL, self.text_encoder_name, None)
+        if text_encoder_cfg is None:
+            raise AttributeError(f"MODEL.{self.text_encoder_name} is not defined in config")
+
+        self.cam_sampling = getattr(text_encoder_cfg, 'CAM_SAMPLING', 'topk')
+        self.text_dim = _infer_text_dim(cfg, self.text_encoder_name)
         self.num_heads = cfg.MODEL.STM.NUM_HEADS
 
         self.num_stages = cfg.MODEL.STM.NUM_STAGES
@@ -398,7 +442,7 @@ class STMDecoder(nn.Module):
                 num_classes_object=cfg.MODEL.STM.OBJECT_CLASSES,
                 num_classes_action=cfg.MODEL.STM.ACTION_CLASSES,
                 open_vocabulary=cfg.DATA.OPEN_VOCABULARY,
-                text_dim=eval('cfg.MODEL.{}.EMBED_DIM'.format(cfg.MODEL.TEXT_ENCODER)),
+                text_dim=self.text_dim,
                 cond_cls=cfg.MODEL.STM.COND_CLS,
                 fuse_cls=cfg.MODEL.STM.FUSE_CLS,
                 fuse_factor=cfg.MODEL.STM.FUSE_FACTOR,

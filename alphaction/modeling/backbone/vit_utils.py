@@ -5,10 +5,9 @@ import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 import numpy as np
 
-from timm.models.registry import register_model
-from timm.models.layers import trunc_normal_ as __call_trunc_normal_
-from timm.models.layers import drop_path, to_2tuple
-from timm.models.layers import to_2tuple
+from timm.models import register_model
+from timm.layers import trunc_normal_ as __call_trunc_normal_
+from timm.layers import drop_path, to_2tuple
 
 
 def trunc_normal_(tensor, mean=0., std=1.):

@@ -1,6 +1,6 @@
 DATA:
   INPUT_TYPE: "video"
-  PATH_TO_DATA_DIR: "data/Videos"      # your dataset root
+  PATH_TO_DATA_DIR: "C:/Users/tsake/Downloads/weak-2 work/aeromixer_video_data"      # local dataset root
   FRAME_DIR: "frames"                  # <PATH_TO_DATA_DIR>/frames/<video_id>/<frame_files>
   NUM_FRAMES: 8
   SAMPLING_RATE: 2
@@ -8,14 +8,16 @@ DATA:
   STD: [0.26862954, 0.26130258, 0.27577711]
   DATASETS: ['videos']
   OPEN_VOCABULARY: True
-  VOCAB_FILE: ""         # optional: JSON/TXT class->caption mapping
-  VOCAB_OPEN_FILE: ""    # optional: open-set vocab mapping for EVAL_OPEN
+  VOCAB_FILE: "annotations/vocab_closed.json"
+  VOCAB_OPEN_FILE: "annotations/vocab_open.json"
 
 MODEL:
   MULTI_LABEL_ACTION: False
   BACKBONE:
     CONV_BODY: "ViT-B/16"
     PATHWAYS: 1
+  STM:
+    TEMPORAL_POINTS: 8
 
 SOLVER:
   MAX_EPOCH: 12

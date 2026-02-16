@@ -6,8 +6,8 @@ from collections import OrderedDict
 import torch
 from torch import nn
 from einops import rearrange
-from timm.models.layers import DropPath
-from timm.models.registry import register_model
+from timm.layers import DropPath
+from timm.models import register_model
 
 import torch.utils.checkpoint as checkpoint
 

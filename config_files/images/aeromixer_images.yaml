@@ -1,8 +1,8 @@
 DATA:
   INPUT_TYPE: "image"
-  PATH_TO_DATA_DIR: "data/Images"  # put your images and train.txt/test.txt here
-  FRAME_DIR: "images"               # relative path inside PATH_TO_DATA_DIR
-  ANNOTATION_FORMAT: "auto"
+  PATH_TO_DATA_DIR: "C:/Users/tsake/Downloads/weak-2 work/aeromixer_image_data"  # local dataset path
+  FRAME_DIR: ""                     # dataset root contains stratified_train/stratified_val
+  ANNOTATION_FORMAT: "yolo"
   NUM_FRAMES: 1
   SAMPLING_RATE: 1
   MEAN: [0.48145466, 0.4578275, 0.40821073]
