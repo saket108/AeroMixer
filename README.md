@@ -5,7 +5,7 @@ AeroMixer is a unified action/detection training pipeline for **images** and **v
 ## Key Capabilities
 
 - Unified training and evaluation stack for image and video inputs.
-- Generic dataset support (no hard dependency on AVA/JHMDB/UCF24 structure).
+- Generic dataset support .
 - Open-vocabulary mode with closed/open class vocabularies.
 - CPU and GPU execution support for training and demo inference.
 
