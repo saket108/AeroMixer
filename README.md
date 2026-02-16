@@ -193,6 +193,17 @@ Use `--device cuda` when GPU is available.
 - If running on Windows without Bash, use direct `python ...` commands instead of `trainval.sh`.
 - If open-vocabulary evaluation fails, verify class labels in your annotations match labels in vocab files.
 
+## Quality Gates
+
+Run local smoke checks:
+
+```bash
+python -m compileall alphaction preprocess demo.py demo_image.py train_net.py test_net.py
+python -m unittest discover -s tests -v
+```
+
+A GitHub Actions workflow is included at `.github/workflows/ci.yml` and runs on every push/PR.
+
 ## License
 
 This project is released under the terms in `LICENSE`.
