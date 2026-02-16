@@ -1,27 +1,144 @@
 # AeroMixer
 
-AeroMixer supports both image and generic video detection pipelines.
+AeroMixer is a unified action/detection training pipeline for **images** and **videos**, with optional **open-vocabulary semantic labels** (text prompts per class).
 
-## What Is Active
+## Key Capabilities
 
-- Image pipeline via `ImageDataset`.
-- Generic video pipeline via `VideoDataset` (no AVA/JHMDB/UCF24 required).
-- Same detector/trainer stack for both modes.
+- Unified training and evaluation stack for image and video inputs.
+- Generic dataset support (no hard dependency on AVA/JHMDB/UCF24 structure).
+- Open-vocabulary mode with closed/open class vocabularies.
+- CPU and GPU execution support for training and demo inference.
 
-## Setup
+## Repository Structure
 
-Use your current Python environment, then install dependencies:
+- `alphaction/` - core model, dataset loaders, training, inference, utilities.
+- `config_files/images/aeromixer_images.yaml` - default image config.
+- `config_files/videos/aeromixer_videos.yaml` - default video config.
+- `preprocess/prepare_generic_video_dataset.py` - video-to-frames + split generation.
+- `preprocess/build_open_vocab.py` - build closed/open semantic vocab files.
+- `demo_image.py` / `demo.py` - single-image and video demo inference.
+
+## Installation
+
+1. Create and activate your Python environment.
+2. Install PyTorch for your CUDA/CPU setup.
+3. Install project dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Configs
+## Configuration Entry Points
 
-- Image: `config_files/images/aeromixer_images.yaml`
-- Video: `config_files/videos/aeromixer_videos.yaml`
+- Image pipeline: `config_files/images/aeromixer_images.yaml`
+- Video pipeline: `config_files/videos/aeromixer_videos.yaml`
 
-## Run
+Core fields you typically update:
+
+- `DATA.PATH_TO_DATA_DIR`
+- `DATA.FRAME_DIR`
+- `MODEL.WEIGHT` (for evaluation/demo)
+- `SOLVER.MAX_EPOCH`
+- `OUTPUT_DIR`
+
+## Dataset Support
+
+### Image Mode (`DATA.INPUT_TYPE: "image"`)
+
+`ImageDataset` supports:
+
+- Plain TXT: `<image_rel_path> <x1> <y1> <x2> <y2> <class_id>`
+- YOLO-style folder layout (`images/...`, `labels/...`)
+- COCO JSON
+- Pascal VOC XML
+
+### Video Mode (`DATA.INPUT_TYPE: "video"`)
+
+Expected frame layout:
+
+```text
+<PATH_TO_DATA_DIR>/<FRAME_DIR>/<video_id>/<frame_files>
+```
+
+Split TXT format:
+
+```text
+<video_id> <frame_id> <x1> <y1> <x2> <y2> <class_id_or_name>
+```
+
+## Prepare a Generic Video Dataset
+
+### A) Quick smoke-test data (placeholder boxes)
+
+```bash
+python preprocess/prepare_generic_video_dataset.py \
+  --videos-dir data/raw_videos \
+  --output-root data/Videos \
+  --split all \
+  --train-ratio 0.8 \
+  --recursive
+```
+
+### B) Real annotations from JSON
+
+Single JSON with split labels:
+
+```bash
+python preprocess/prepare_generic_video_dataset.py \
+  --videos-dir data/raw_videos \
+  --output-root data/Videos \
+  --split all \
+  --annotation-json data/annotations/all.json \
+  --bbox-format auto \
+  --recursive
+```
+
+Per-split JSON:
+
+```bash
+python preprocess/prepare_generic_video_dataset.py \
+  --videos-dir data/raw_videos \
+  --output-root data/Videos \
+  --split all \
+  --annotation-json data/annotations/{split}.json \
+  --bbox-format auto \
+  --recursive
+```
+
+Generated outputs:
+
+- `data/Videos/frames/<video_id>/<frame_id>.jpg`
+- `data/Videos/train.txt` and/or `data/Videos/test.txt`
+- `data/Videos/annotations/video_id_map.json`
+
+## Open-Vocabulary Semantic Labels
+
+Build closed/open vocab files from your existing annotations:
+
+```bash
+python preprocess/build_open_vocab.py \
+  --annotations data/Videos/train.txt data/Videos/test.txt \
+  --out-closed data/Videos/annotations/vocab_closed.json \
+  --out-open data/Videos/annotations/vocab_open.json \
+  --closed-ratio 0.8 \
+  --prompt-template "a person is {label}"
+```
+
+Enable in config:
+
+```yaml
+DATA:
+  OPEN_VOCABULARY: True
+  VOCAB_FILE: "annotations/vocab_closed.json"
+  VOCAB_OPEN_FILE: "annotations/vocab_open.json"
+TEST:
+  EVAL_OPEN: True
+```
+
+- `VOCAB_FILE`: classes used for training (closed set)
+- `VOCAB_OPEN_FILE`: classes used during open-set evaluation
+
+## Train and Evaluate
 
 ### Image
 
@@ -37,13 +154,7 @@ python train_net.py --config-file config_files/videos/aeromixer_videos.yaml
 python test_net.py --config-file config_files/videos/aeromixer_videos.yaml
 ```
 
-Video demo inference:
-
-```bash
-python demo.py --config-file config_files/videos/aeromixer_videos.yaml --video path/to/input.mp4 --output output/video_demo.mp4
-```
-
-Or use script:
+### Optional helper script (Bash)
 
 ```bash
 bash trainval.sh train images
@@ -52,123 +163,36 @@ bash trainval.sh train videos
 bash trainval.sh eval videos checkpoints/model_final.pth
 ```
 
-## Generic Video Dataset Format
+## Demo Inference
 
-Set in config:
-
-- `DATA.PATH_TO_DATA_DIR`: dataset root
-- `DATA.FRAME_DIR`: frame root under dataset root
-- `DATA.DATASETS: ['videos']`
-- `DATA.INPUT_TYPE: 'video'`
-
-## Video Preprocess Script
-
-Use the generic script that replaces benchmark-specific preprocess scripts:
-
-Quick test split (placeholders):
+### Image
 
 ```bash
-python preprocess/prepare_generic_video_dataset.py \
-  --videos-dir data/raw_videos \
-  --output-root data/Videos \
-  --split test \
-  --recursive
+python demo_image.py \
+  --config-file config_files/images/aeromixer_images.yaml \
+  --image path/to/image.jpg \
+  --output output/image_demo.png \
+  --device cpu
 ```
 
-Generate both `train.txt` and `test.txt` in one command:
+### Video
 
 ```bash
-python preprocess/prepare_generic_video_dataset.py \
-  --videos-dir data/raw_videos \
-  --output-root data/Videos \
-  --split all \
-  --train-ratio 0.8 \
-  --recursive
+python demo.py \
+  --config-file config_files/videos/aeromixer_videos.yaml \
+  --video path/to/input.mp4 \
+  --output output/video_demo.mp4 \
+  --device cpu
 ```
 
-With real labels JSON (single file with `split` field):
+Use `--device cuda` when GPU is available.
 
-```bash
-python preprocess/prepare_generic_video_dataset.py \
-  --videos-dir data/raw_videos \
-  --output-root data/Videos \
-  --split all \
-  --annotation-json data/annotations/all.json \
-  --bbox-format auto \
-  --recursive
-```
+## Troubleshooting
 
-With per-split JSON files:
-
-```bash
-python preprocess/prepare_generic_video_dataset.py \
-  --videos-dir data/raw_videos \
-  --output-root data/Videos \
-  --split all \
-  --annotation-json data/annotations/{split}.json \
-  --bbox-format auto \
-  --recursive
-```
-
-Outputs:
-- `data/Videos/frames/<video_id>/<frame_id>.jpg`
-- `data/Videos/train.txt` and/or `data/Videos/test.txt`
-- `data/Videos/annotations/video_id_map.json`
-
-
-## Open-Vocabulary Setup
-
-Generate closed/open vocab files from your annotations:
-
-```bash
-python preprocess/build_open_vocab.py \
-  --annotations data/Videos/train.txt data/Videos/test.txt \
-  --out-closed data/Videos/annotations/vocab_closed.json \
-  --out-open data/Videos/annotations/vocab_open.json \
-  --closed-ratio 0.8 \
-  --prompt-template "a person is {label}"
-```
-
-Then set in config (`config_files/videos/aeromixer_videos.yaml`):
-
-```yaml
-DATA:
-  OPEN_VOCABULARY: True
-  VOCAB_FILE: "annotations/vocab_closed.json"
-  VOCAB_OPEN_FILE: "annotations/vocab_open.json"
-TEST:
-  EVAL_OPEN: True
-```
-
-Use `VOCAB_FILE` for training classes (closed set) and `VOCAB_OPEN_FILE` for eval classes (open set).
-
-Frame layout:
-
-```text
-<PATH_TO_DATA_DIR>/<FRAME_DIR>/<video_id>/<frame_files>
-```
-
-Annotations (choose one):
-
-1) TXT (`train.txt`, `test.txt` or `annotations/train.txt`, `annotations/test.txt`)
-
-```text
-<video_id> <frame_id> <x1> <y1> <x2> <y2> <class_id_or_name>
-```
-
-2) JSON (`<split>.json` or `annotations/<split>.json`)
-
-Each record needs:
-- `video` / `video_id` / `vid`
-- `frame` / `frame_id`
-- `bbox` / `box` / `xyxy` (xyxy)
-- `label` / `class_id` / `category_id` / `class`
-
-## Notes
-
-- Legacy benchmark-specific dataset adapters were removed; use generic `images`/`videos` modes.
-- For video, preprocess your raw videos into frame folders first.
+- Missing import warnings in IDE (for example `yacs`, `fvcore`, `einops`, `supervision`, `imageio`, `tensorboardX`) usually mean the current Python environment does not have all dependencies installed.
+- If running on Windows without Bash, use direct `python ...` commands instead of `trainval.sh`.
+- If open-vocabulary evaluation fails, verify class labels in your annotations match labels in vocab files.
 
 ## License
 
-See `LICENSE`.
+This project is released under the terms in `LICENSE`.
