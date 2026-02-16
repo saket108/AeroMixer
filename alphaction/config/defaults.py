@@ -62,6 +62,9 @@ _C.DATA.REVERSE_INPUT_CHANNEL = False
 _C.DATA.DATASETS = ['images']
 
 _C.DATA.OPEN_VOCABULARY = False
+# Optional generic vocab files for open-vocabulary text prompts.
+_C.DATA.VOCAB_FILE = ""
+_C.DATA.VOCAB_OPEN_FILE = ""
 
 _C.DATA.REFINE_VOCAB = False
 

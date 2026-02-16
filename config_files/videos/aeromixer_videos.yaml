@@ -7,7 +7,9 @@ DATA:
   MEAN: [0.48145466, 0.4578275, 0.40821073]
   STD: [0.26862954, 0.26130258, 0.27577711]
   DATASETS: ['videos']
-  OPEN_VOCABULARY: False
+  OPEN_VOCABULARY: True
+  VOCAB_FILE: ""         # optional: JSON/TXT class->caption mapping
+  VOCAB_OPEN_FILE: ""    # optional: open-set vocab mapping for EVAL_OPEN
 
 MODEL:
   MULTI_LABEL_ACTION: False
@@ -22,6 +24,7 @@ SOLVER:
 TEST:
   VIDEOS_PER_BATCH: 8
   METRIC: 'frame_ap'
+  EVAL_OPEN: True
 
 IMAGES:
   BGR: False

@@ -116,6 +116,32 @@ Outputs:
 - `data/Videos/annotations/video_id_map.json`
 
 
+## Open-Vocabulary Setup
+
+Generate closed/open vocab files from your annotations:
+
+```bash
+python preprocess/build_open_vocab.py \
+  --annotations data/Videos/train.txt data/Videos/test.txt \
+  --out-closed data/Videos/annotations/vocab_closed.json \
+  --out-open data/Videos/annotations/vocab_open.json \
+  --closed-ratio 0.8 \
+  --prompt-template "a person is {label}"
+```
+
+Then set in config (`config_files/videos/aeromixer_videos.yaml`):
+
+```yaml
+DATA:
+  OPEN_VOCABULARY: True
+  VOCAB_FILE: "annotations/vocab_closed.json"
+  VOCAB_OPEN_FILE: "annotations/vocab_open.json"
+TEST:
+  EVAL_OPEN: True
+```
+
+Use `VOCAB_FILE` for training classes (closed set) and `VOCAB_OPEN_FILE` for eval classes (open set).
+
 Frame layout:
 
 ```text

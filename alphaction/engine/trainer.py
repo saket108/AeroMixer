@@ -188,8 +188,11 @@ def val_in_train(
             total_mAP = eval_res[key]
             tblogger.add_scalar(dataset_name + '_mAP_{}IOU'.format(iou_thresh), total_mAP, iteration)
             if data_loader_val.dataset.open_vocabulary and data_loader_val.dataset.eval_open:
-                tblogger.add_scalar(dataset_name + '_mAP_{}IOU(base)'.format(iou_thresh), eval_res['{}(base)'.format(key)], iteration)
-                tblogger.add_scalar(dataset_name + '_mAP_{}IOU(novel)'.format(iou_thresh), eval_res['{}(novel)'.format(key)], iteration)
+                key_base = '{}(base)'.format(key)
+                key_novel = '{}(novel)'.format(key)
+                if key_base in eval_res and key_novel in eval_res:
+                    tblogger.add_scalar(dataset_name + '_mAP_{}IOU(base)'.format(iou_thresh), eval_res[key_base], iteration)
+                    tblogger.add_scalar(dataset_name + '_mAP_{}IOU(novel)'.format(iou_thresh), eval_res[key_novel], iteration)
 
         # after evaluation, restore the training vocabulary
         if use_open_vocab:

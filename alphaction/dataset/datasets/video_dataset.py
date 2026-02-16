@@ -52,6 +52,7 @@ class VideoDataset(torch.utils.data.Dataset):
         self.multilabel_action = cfg.MODEL.MULTI_LABEL_ACTION
         self.test_iou_thresh = cfg.TEST.IOU_THRESH
         self.open_vocabulary = cfg.DATA.OPEN_VOCABULARY
+        self.eval_open = cfg.TEST.EVAL_OPEN
         self.text_input = None
         self.vocabulary = {"closed": [], "open": []}
 
@@ -170,10 +171,230 @@ class VideoDataset(torch.utils.data.Dataset):
         return slow, fast, whwh, boxes_out, label_arrs, extras, index
 
     def _build_text_input(self):
-        return {
-            "closed": {name: {"caption": name} for name in self.vocabulary["closed"]},
-            "open": {name: {"caption": name} for name in self.vocabulary["open"]},
-        }
+        closed_source, open_source = self._load_vocab_sources()
+        closed_text = self._materialize_text_data(closed_source, allow_extra=False)
+        if open_source is None:
+            open_text = self._copy_text_data(closed_text)
+        else:
+            open_text = self._materialize_text_data(open_source, allow_extra=True)
+
+        self.vocabulary["closed"] = list(closed_text.keys())
+        self.vocabulary["open"] = list(open_text.keys())
+        return {"closed": closed_text, "open": open_text}
+
+    def _get_vocab_cfg_value(self, key):
+        data_value = str(getattr(self.cfg.DATA, key, "")).strip()
+        if data_value:
+            return data_value
+        return str(getattr(self.cfg.IMAGES, key, "")).strip()
+
+    def _load_vocab_sources(self):
+        closed_source = {}
+        open_source = None
+
+        vocab_file = self._get_vocab_cfg_value("VOCAB_FILE")
+        if vocab_file:
+            vocab_path = self._resolve_vocab_path(vocab_file)
+            vocab_data = self._read_vocab_data(vocab_path)
+            closed_data, open_data = self._extract_vocab_sections(vocab_data)
+            closed_source = self._normalize_vocab_entries(closed_data)
+            if open_data is not None:
+                open_source = self._normalize_vocab_entries(open_data)
+
+        vocab_open_file = self._get_vocab_cfg_value("VOCAB_OPEN_FILE")
+        if vocab_open_file:
+            vocab_open_path = self._resolve_vocab_path(vocab_open_file)
+            open_source = self._normalize_vocab_entries(self._read_vocab_data(vocab_open_path))
+
+        return closed_source, open_source
+
+    def _resolve_vocab_path(self, vocab_file):
+        if os.path.isabs(vocab_file):
+            vocab_path = vocab_file
+        else:
+            vocab_path = os.path.join(self.data_dir, vocab_file)
+        if not os.path.exists(vocab_path):
+            raise AssertionError(f"Vocabulary file not found: {vocab_path}")
+        return vocab_path
+
+    def _read_vocab_data(self, vocab_path):
+        ext = os.path.splitext(vocab_path)[1].lower()
+        if ext == ".json":
+            with open(vocab_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+
+        data = {}
+        with open(vocab_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "\t" in line:
+                    key, caption = line.split("\t", 1)
+                elif ":" in line:
+                    key, caption = line.split(":", 1)
+                else:
+                    key, caption = line, line
+                data[key.strip()] = caption.strip()
+        return data
+
+    def _extract_vocab_sections(self, vocab_data):
+        if vocab_data is None:
+            return {}, None
+
+        if isinstance(vocab_data, dict):
+            closed_data = self._find_section_in_json(vocab_data, ["closed", "known", "seen", "base", "train"])
+            open_data = self._find_section_in_json(vocab_data, ["open", "novel", "unseen", "all", "eval", "test"])
+
+            if closed_data is None:
+                closed_data = self._find_section_in_json(vocab_data, ["classes", "labels", "categories", "names", "vocabulary", "vocab"])
+
+            if closed_data is not None or open_data is not None:
+                return (closed_data if closed_data is not None else {}), open_data
+
+        return vocab_data, None
+
+    def _find_section_in_json(self, node, aliases, depth=0):
+        if depth > 8:
+            return None
+
+        alias_set = {str(alias).strip().lower().replace("-", "_").replace(" ", "_") for alias in aliases}
+
+        if isinstance(node, dict):
+            normalized_items = []
+            for raw_key, raw_value in node.items():
+                key = str(raw_key).strip().lower().replace("-", "_").replace(" ", "_")
+                normalized_items.append((key, raw_value))
+            for key, value in normalized_items:
+                if key in alias_set:
+                    return value
+            for _, value in normalized_items:
+                found = self._find_section_in_json(value, aliases, depth=depth + 1)
+                if found is not None:
+                    return found
+        elif isinstance(node, list):
+            for item in node:
+                found = self._find_section_in_json(item, aliases, depth=depth + 1)
+                if found is not None:
+                    return found
+
+        return None
+
+    def _normalize_vocab_entries(self, data):
+        entries = {}
+        if data is None:
+            return entries
+
+        if isinstance(data, dict):
+            for key, value in data.items():
+                key_str = str(key).strip()
+                if not key_str:
+                    continue
+                caption = value
+                if isinstance(value, dict):
+                    caption = value.get("caption", value.get("text", value.get("prompt", key_str)))
+                entries[key_str] = {"caption": self._normalize_caption(caption, default_text=key_str)}
+            return entries
+
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    key = item.get("name", item.get("label", item.get("class", item.get("id", item.get("class_id", item.get("category_id", None))))))
+                    if key is None:
+                        continue
+                    key_str = str(key).strip()
+                    if not key_str:
+                        continue
+                    caption = item.get("caption", item.get("text", item.get("prompt", item.get("description", key_str))))
+                    entries[key_str] = {"caption": self._normalize_caption(caption, default_text=key_str)}
+                else:
+                    label = str(item).strip()
+                    if label:
+                        entries[label] = {"caption": label}
+            return entries
+
+        text = str(data).strip()
+        if text:
+            entries[text] = {"caption": text}
+        return entries
+
+    def _normalize_caption(self, caption, default_text):
+        if isinstance(caption, dict):
+            if "caption" in caption:
+                return self._normalize_caption(caption["caption"], default_text)
+            if "text" in caption:
+                return self._normalize_caption(caption["text"], default_text)
+            if "prompt" in caption:
+                return self._normalize_caption(caption["prompt"], default_text)
+            if len(caption) > 0:
+                return self._normalize_caption(next(iter(caption.values())), default_text)
+            return str(default_text)
+        if isinstance(caption, list):
+            cleaned = [str(item).strip() for item in caption if str(item).strip()]
+            return cleaned if len(cleaned) > 0 else str(default_text)
+        if caption is None:
+            return str(default_text)
+        text = str(caption).strip()
+        return text if text else str(default_text)
+
+    def _materialize_text_data(self, source_entries, allow_extra=False):
+        data = {}
+        consumed_keys = set()
+
+        source_keys_lut = {str(key): key for key in source_entries.keys()}
+        source_keys_lut_lower = {str(key).lower(): key for key in source_entries.keys()}
+
+        for idx, class_name in enumerate(self.class_names):
+            candidates = [class_name, str(idx)]
+            matched_key = None
+            for candidate in candidates:
+                candidate_str = str(candidate)
+                if candidate_str in source_keys_lut:
+                    matched_key = source_keys_lut[candidate_str]
+                    break
+                candidate_lower = candidate_str.lower()
+                if candidate_lower in source_keys_lut_lower:
+                    matched_key = source_keys_lut_lower[candidate_lower]
+                    break
+
+            if matched_key is None:
+                caption = class_name
+            else:
+                consumed_keys.add(matched_key)
+                caption = source_entries[matched_key]["caption"]
+
+            data[class_name] = {"caption": caption}
+
+        if allow_extra:
+            for key, value in source_entries.items():
+                if key in consumed_keys:
+                    continue
+                extra_name = self._normalize_open_vocab_name(key)
+                if extra_name in data:
+                    continue
+                data[extra_name] = {"caption": value["caption"]}
+
+        return data
+
+    def _normalize_open_vocab_name(self, key):
+        key_str = str(key).strip()
+        if key_str.isdigit():
+            idx = int(key_str)
+            if 0 <= idx < len(self.class_names):
+                return self.class_names[idx]
+            return f"class_{idx}"
+        return key_str
+
+    def _copy_text_data(self, text_data):
+        copied = {}
+        for key, value in text_data.items():
+            caption = value.get("caption", key)
+            if isinstance(caption, list):
+                copied_caption = list(caption)
+            else:
+                copied_caption = caption
+            copied[key] = {"caption": copied_caption}
+        return copied
 
     def _index_frame_folders(self, frame_root):
         video_index = {}
