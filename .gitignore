@@ -1,22 +1,35 @@
-data
-pretrained
-output/
-*.pyc
-*.vscode
-*.log
-*.egg-info
-*.out
-*.err
-*_temp.*
-*.jpg
-*.jpeg
-.nfs*
-alphaction/cam/demo.py
-*.pth
-backup/
-*backup*
-*/figures/*
-*.zip
-data_zip/
-data-release
+# ---------------- Python ----------------
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# ---------------- Virtual Env ----------------
+.venv/
+venv/
+
+# ---------------- Dataset (DO NOT PUSH IMAGES) ----------------
+data/aircraft/images/
+data/aircraft/labels/
+
+# ---------------- Training outputs ----------------
+output/
+runs/
+checkpoints/
+
+# ---------------- Model weights ----------------
+*.pt
+*.pth
+
+# ---------------- Large files ----------------
+*.zip
+*.tar
+*.gz
+
+# ---------------- VS Code ----------------
+.vscode/
+
+# ---------------- OS files ----------------
+.DS_Store
+Thumbs.db

@@ -1,14 +1,15 @@
 DATA:
   INPUT_TYPE: "image"
-  PATH_TO_DATA_DIR: "C:/Users/tsake/Downloads/weak-2 work/aeromixer_image_data"  # local dataset path
-  FRAME_DIR: ""                     # dataset root contains stratified_train/stratified_val
+  PATH_TO_DATA_DIR: "data/aircraft"   # relative path inside repo
+  FRAME_DIR: "images"                 # images folder inside dataset
   ANNOTATION_FORMAT: "yolo"
   NUM_FRAMES: 1
   SAMPLING_RATE: 1
   MEAN: [0.48145466, 0.4578275, 0.40821073]
   STD: [0.26862954, 0.26130258, 0.27577711]
-  DATASETS: ['images']
+  DATASETS: ['aircraft']
   OPEN_VOCABULARY: False
+
 
 MODEL:
   MULTI_LABEL_ACTION: False
@@ -19,8 +20,8 @@ MODEL:
     TEMPORAL_POINTS: 1
 
 SOLVER:
-  MAX_EPOCH: 12
-  IMAGES_PER_BATCH: 16
+  MAX_EPOCH: 1
+  IMAGES_PER_BATCH: 4
 
 TEST:
   IMAGES_PER_BATCH: 16
@@ -33,4 +34,5 @@ IMAGES:
   VOCAB_FILE: ""       # optional: JSON/TXT class->caption mapping
   VOCAB_OPEN_FILE: ""  # optional: open-set vocab mapping for EVAL_OPEN
 
-OUTPUT_DIR: "output/images/aeromixer_images"
+OUTPUT_DIR: OUTPUT_DIR: "output/aircraft_run"
+
