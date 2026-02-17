@@ -28,17 +28,11 @@ class TestCliHelpSmoke(unittest.TestCase):
     def test_demo_image_help(self):
         self._run_help("demo_image.py")
 
-    def test_demo_video_help(self):
-        self._run_help("demo.py")
-
     def test_train_help(self):
         self._run_help("train_net.py")
 
     def test_test_help(self):
         self._run_help("test_net.py")
-
-    def test_prepare_generic_video_dataset_help(self):
-        self._run_help("preprocess/prepare_generic_video_dataset.py")
 
     def test_build_open_vocab_help(self):
         self._run_help("preprocess/build_open_vocab.py")

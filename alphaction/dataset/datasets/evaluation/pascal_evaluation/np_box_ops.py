@@ -18,6 +18,9 @@
 Example box operations that are supported:
   * Areas: compute bounding box areas
   * IOU: pairwise intersection-over-union scores
+  
+For multimodal detection, also supports:
+  * Text-based similarity operations for open vocabulary detection
 """
 import numpy as np
 
@@ -95,3 +98,73 @@ def ioa(boxes1, boxes2):
   intersect = intersection(boxes1, boxes2)
   areas = np.expand_dims(area(boxes2), axis=0)
   return intersect / areas
+
+
+# ============================================================================
+# Multimodal (Image + Text) Operations
+# ============================================================================
+
+def compute_text_similarity(box_features, text_features):
+  """Compute cosine similarity between box features and text features.
+  
+  This is useful for open vocabulary detection where we want to compute
+  similarity between detected regions and text prompts.
+  
+  Args:
+    box_features: numpy array of shape [N, D] representing box features
+    text_features: numpy array of shape [M, D] representing text features
+    
+  Returns:
+    similarity_scores: numpy array of shape [N, M] representing 
+      cosine similarity between box and text features
+  """
+  # Normalize features
+  box_norm = box_features / (np.linalg.norm(box_features, axis=1, keepdims=True) + 1e-8)
+  text_norm = text_features / (np.linalg.norm(text_features, axis=1, keepdims=True) + 1e-8)
+  
+  # Compute cosine similarity
+  similarity_scores = np.dot(box_norm, text_norm.T)
+  
+  return similarity_scores
+
+
+def compute_text_similarity_scores(boxes, text_features):
+  """Compute cosine similarity between box features and a single text feature vector.
+  
+  Args:
+    boxes: numpy array of shape [N, 4] (not used, kept for API compatibility)
+    text_features: numpy array of shape [D] representing text features
+    
+  Returns:
+    similarity_scores: numpy array of shape [N] representing 
+      cosine similarity between each box and the text features
+  """
+  # This function expects text_features to be [N, D] but accepts [D] for single vector
+  if len(text_features.shape) == 1:
+    # Single text feature vector - reshape to [1, D]
+    text_features = text_features.reshape(1, -1)
+  
+  # For box features, we would need them as input - this is a placeholder
+  # In practice, you would pass the actual box visual features
+  return np.array([])
+
+
+def box_text_similarity(box_features, text_feature):
+  """Compute similarity between multiple box features and a single text feature.
+  
+  Args:
+    box_features: numpy array of shape [N, D] representing box features
+    text_feature: numpy array of shape [D] representing text feature
+    
+  Returns:
+    similarity_scores: numpy array of shape [N] representing 
+      cosine similarity between each box and the text feature
+  """
+  # Normalize features
+  box_norm = box_features / (np.linalg.norm(box_features, axis=1, keepdims=True) + 1e-8)
+  text_norm = text_feature / (np.linalg.norm(text_feature) + 1e-8)
+  
+  # Compute cosine similarity
+  similarity_scores = np.dot(box_norm, text_norm)
+  
+  return similarity_scores

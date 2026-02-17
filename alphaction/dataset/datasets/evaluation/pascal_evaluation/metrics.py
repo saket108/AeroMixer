@@ -143,3 +143,162 @@ def compute_cor_loc(num_gt_imgs_per_class,
     return np.where(
         num_gt_imgs_per_class == 0, np.nan,
         num_images_correctly_detected_per_class / num_gt_imgs_per_class)
+
+
+# ============================================================================
+# Multimodal (Image + Text) Metrics
+# ============================================================================
+
+def compute_text_similarity_scores(image_features, text_features):
+  """Compute cosine similarity between image and text features.
+
+  Args:
+    image_features: A float numpy array of shape [N, D] representing image features
+    text_features: A float numpy array of shape [M, D] representing text features
+
+  Returns:
+    similarity_scores: A float numpy array of shape [N, M] representing 
+      cosine similarity between image and text features
+  """
+  # Normalize features
+  image_norm = np.linalg.norm(image_features, axis=1, keepdims=True)
+  text_norm = np.linalg.norm(text_features, axis=1, keepdims=True)
+  
+  # Avoid division by zero
+  image_features_norm = image_features / (image_norm + 1e-8)
+  text_features_norm = text_features / (text_norm + 1e-8)
+  
+  # Compute cosine similarity
+  similarity_scores = np.dot(image_features_norm, text_features_norm.T)
+  
+  return similarity_scores
+
+
+def compute_multimodal_precision_recall(image_scores, text_scores, labels, num_gt, alpha=0.5):
+  """Compute precision and recall for multimodal (image + text) detection.
+
+  Args:
+    image_scores: A float numpy array representing image-based detection scores
+    text_scores: A float numpy array representing text similarity scores
+    labels: A boolean numpy array representing true/false positive labels
+    num_gt: Number of ground truth instances
+    alpha: Weight for combining image and text scores (0 = text only, 1 = image only)
+
+  Raises:
+    ValueError: if the input is not of the correct format
+
+  Returns:
+    precision: Fraction of positive instances over detected ones
+    recall: Fraction of detected positive instance over all positive instances
+  """
+  if not isinstance(labels, np.ndarray) or labels.dtype != np.bool_ or len(labels.shape) != 1:
+    raise ValueError("labels must be single dimension bool numpy array")
+
+  if not isinstance(image_scores, np.ndarray) or len(image_scores.shape) != 1:
+    raise ValueError("image_scores must be single dimension numpy array")
+  
+  if not isinstance(text_scores, np.ndarray) or len(text_scores.shape) != 1:
+    raise ValueError("text_scores must be single dimension numpy array")
+
+  if num_gt < np.sum(labels):
+    raise ValueError("Number of true positives must be smaller than num_gt.")
+
+  if len(image_scores) != len(labels) or len(text_scores) != len(labels):
+    raise ValueError("scores and labels must be of the same size.")
+
+  if num_gt == 0:
+    return None, None
+
+  # Combine image and text scores
+  combined_scores = alpha * image_scores + (1 - alpha) * text_scores
+
+  sorted_indices = np.argsort(combined_scores)
+  sorted_indices = sorted_indices[::-1]
+  labels = labels.astype(int)
+  true_positive_labels = labels[sorted_indices]
+  false_positive_labels = 1 - true_positive_labels
+  cum_true_positives = np.cumsum(true_positive_labels)
+  cum_false_positives = np.cumsum(false_positive_labels)
+  precision = cum_true_positives.astype(float) / (
+      cum_true_positives + cum_false_positives)
+  recall = cum_true_positives.astype(float) / num_gt
+  return precision, recall
+
+
+def compute_text_aware_average_precision(image_scores, text_scores, labels, num_gt, alpha=0.5):
+  """Compute Average Precision for multimodal (image + text) detection.
+
+  Args:
+    image_scores: A float numpy array representing image-based detection scores
+    text_scores: A float numpy array representing text similarity scores
+    labels: A boolean numpy array representing true/false positive labels
+    num_gt: Number of ground truth instances
+    alpha: Weight for combining image and text scores
+
+  Returns:
+    average_precision: The area under the precision recall curve
+  """
+  precision, recall = compute_multimodal_precision_recall(
+      image_scores, text_scores, labels, num_gt, alpha)
+  
+  if precision is None:
+    return np.NAN
+  
+  return compute_average_precision(precision, recall)
+
+
+def compute_open_vocabulary_metrics(detection_scores, detection_text_prompts, 
+                                   gt_labels, gt_text_prompts, num_gt):
+  """Compute metrics for open vocabulary detection.
+
+  Args:
+    detection_scores: Detection scores for each box
+    detection_text_prompts: Text prompts for each detection
+    gt_labels: Ground truth labels
+    gt_text_prompts: Ground truth text prompts
+    num_gt: Number of ground truth instances
+
+  Returns:
+    metrics: Dictionary containing precision, recall, and AP
+  """
+  # Match detections to ground truth based on text similarity
+  matched = np.zeros(len(detection_scores), dtype=bool)
+  labels = np.zeros(len(detection_scores), dtype=bool)
+  
+  for gt_idx, gt_prompt in enumerate(gt_text_prompts):
+    best_match_idx = -1
+    best_similarity = -1
+    
+    for det_idx, det_prompt in enumerate(detection_text_prompts):
+      if matched[det_idx]:
+        continue
+      
+      # Simple string matching (can be replaced with semantic similarity)
+      if gt_prompt.lower() == det_prompt.lower():
+        similarity = 1.0
+      else:
+        # Check if detection prompt contains gt prompt or vice versa
+        if gt_prompt.lower() in det_prompt.lower() or det_prompt.lower() in gt_prompt.lower():
+          similarity = 0.8
+        else:
+          similarity = 0.0
+      
+      if similarity > best_similarity:
+        best_similarity = similarity
+        best_match_idx = det_idx
+    
+    if best_match_idx >= 0 and best_similarity > 0.5:
+      matched[best_match_idx] = True
+      if best_similarity >= 0.8:
+        labels[best_match_idx] = True
+  
+  # Compute precision-recall
+  precision, recall = compute_precision_recall(detection_scores, labels, num_gt)
+  
+  metrics = {
+    'precision': precision,
+    'recall': recall,
+    'average_precision': compute_average_precision(precision, recall) if precision is not None else np.NAN
+  }
+  
+  return metrics

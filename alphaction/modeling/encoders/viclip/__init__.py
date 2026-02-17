@@ -29,13 +29,8 @@ def get_text_feat_dict(texts, clip, tokenizer, text_feat_d={}):
 def get_vid_feat(frames, clip):
     return clip.get_vid_features(frames)
 
-def _frame_from_video(video):
-    while video.isOpened():
-        success, frame = video.read()
-        if success:
-            yield frame
-        else:
-            break
+# Note: _frame_from_video was removed as video support has been deprecated
+# Video loading functionality is no longer supported in the main pipeline
 
 v_mean = np.array([0.485, 0.456, 0.406]).reshape(1,1,3)
 v_std = np.array([0.229, 0.224, 0.225]).reshape(1,1,3)

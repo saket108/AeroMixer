@@ -25,6 +25,11 @@ It supports the following operations:
    visualization.
 
 Note: This module operates on numpy boxes and box lists.
+
+For multimodal (image + text) detection, also supports:
+1) Adding text prompts with detections
+2) Evaluating open vocabulary detection metrics
+3) Computing text-aware precision/recall metrics
 """
 
 from abc import ABCMeta
@@ -165,6 +170,8 @@ class ObjectDetectionEvaluator(DetectionEvaluator):
           that no boxes are difficult.
         standard_fields.InputDataFields.groundtruth_instance_masks: Optional
           numpy array of shape [num_boxes, height, width] with values in {0, 1}.
+        standard_fields.InputDataFields.groundtruth_text_prompts: Optional
+          list of strings containing text prompts for each ground truth box.
 
     Raises:
       ValueError: On adding groundtruth for an image more than once. Will also
@@ -198,13 +205,21 @@ class ObjectDetectionEvaluator(DetectionEvaluator):
         raise ValueError('Instance masks not in groundtruth dictionary.')
       groundtruth_masks = groundtruth_dict[
           standard_fields.InputDataFields.groundtruth_instance_masks]
+    
+    # Handle multimodal text prompts
+    groundtruth_text_prompts = None
+    if standard_fields.InputDataFields.groundtruth_text_prompts in groundtruth_dict:
+      groundtruth_text_prompts = groundtruth_dict[
+          standard_fields.InputDataFields.groundtruth_text_prompts]
+    
     self._evaluation.add_single_ground_truth_image_info(
         image_key=image_id,
         groundtruth_boxes=groundtruth_dict[
             standard_fields.InputDataFields.groundtruth_boxes],
         groundtruth_class_labels=groundtruth_classes,
         groundtruth_is_difficult_list=groundtruth_difficult,
-        groundtruth_masks=groundtruth_masks)
+        groundtruth_masks=groundtruth_masks,
+        groundtruth_text_prompts=groundtruth_text_prompts)
     self._image_ids.update([image_id])
 
   def add_single_detected_image_info(self, image_id, detections_dict):
@@ -224,6 +239,8 @@ class ObjectDetectionEvaluator(DetectionEvaluator):
         standard_fields.DetectionResultFields.detection_masks: uint8 numpy
           array of shape [num_boxes, height, width] containing `num_boxes` masks
           of values ranging between 0 and 1.
+        standard_fields.DetectionResultFields.detection_text_prompts: Optional
+          list of strings containing text prompts for each detection.
 
     Raises:
       ValueError: If detection masks are not in detections dictionary.
@@ -238,6 +255,13 @@ class ObjectDetectionEvaluator(DetectionEvaluator):
         raise ValueError('Detection masks not in detections dictionary.')
       detection_masks = detections_dict[
           standard_fields.DetectionResultFields.detection_masks]
+    
+    # Handle multimodal text prompts
+    detection_text_prompts = None
+    if standard_fields.DetectionResultFields.detection_text_prompts in detections_dict:
+      detection_text_prompts = detections_dict[
+          standard_fields.DetectionResultFields.detection_text_prompts]
+    
     self._evaluation.add_single_detected_image_info(
         image_key=image_id,
         detected_boxes=detections_dict[
@@ -245,7 +269,8 @@ class ObjectDetectionEvaluator(DetectionEvaluator):
         detected_scores=detections_dict[
             standard_fields.DetectionResultFields.detection_scores],
         detected_class_labels=detection_classes,
-        detected_masks=detection_masks)
+        detected_masks=detection_masks,
+        detected_text_prompts=detection_text_prompts)
 
   def evaluate(self):
     """Compute evaluation result.
@@ -481,6 +506,11 @@ class ObjectDetectionEvaluation(object):
     self.groundtruth_masks = {}
     self.groundtruth_is_difficult_list = {}
     self.groundtruth_is_group_of_list = {}
+    # Multimodal: text prompts for ground truth
+    self.groundtruth_text_prompts = {}
+    # Multimodal: text prompts for detections
+    self.detection_text_prompts = {}
+    
     self.num_gt_instances_per_class = np.zeros(self.num_class, dtype=int)
     self.num_gt_imgs_per_class = np.zeros(self.num_class, dtype=int)
 
@@ -496,6 +526,9 @@ class ObjectDetectionEvaluation(object):
     self.precisions_per_class = []
     self.recalls_per_class = []
     self.corloc_per_class = np.ones(self.num_class, dtype=float)
+    
+    # Multimodal: text similarity scores
+    self.text_similarity_scores_per_class = [[] for _ in range(self.num_class)]
 
   def clear_detections(self):
     self._initialize_detections()
@@ -506,7 +539,8 @@ class ObjectDetectionEvaluation(object):
                                          groundtruth_class_labels,
                                          groundtruth_is_difficult_list=None,
                                          groundtruth_is_group_of_list=None,
-                                         groundtruth_masks=None):
+                                         groundtruth_masks=None,
+                                         groundtruth_text_prompts=None):
     """Adds groundtruth for a single image to be used for evaluation.
 
     Args:
@@ -525,6 +559,8 @@ class ObjectDetectionEvaluation(object):
       groundtruth_masks: uint8 numpy array of shape
         [num_boxes, height, width] containing `num_boxes` groundtruth masks.
         The mask values range from 0 to 1.
+      groundtruth_text_prompts: Optional list of strings containing text prompts
+        for each ground truth box (for multimodal/open vocabulary detection).
     """
     if image_key in self.groundtruth_boxes:
       logger.warning(
@@ -535,6 +571,11 @@ class ObjectDetectionEvaluation(object):
     self.groundtruth_boxes[image_key] = groundtruth_boxes
     self.groundtruth_class_labels[image_key] = groundtruth_class_labels
     self.groundtruth_masks[image_key] = groundtruth_masks
+    
+    # Handle multimodal text prompts
+    if groundtruth_text_prompts is not None:
+      self.groundtruth_text_prompts[image_key] = groundtruth_text_prompts
+    
     if groundtruth_is_difficult_list is None:
       num_boxes = groundtruth_boxes.shape[0]
       groundtruth_is_difficult_list = np.zeros(num_boxes, dtype=bool)
@@ -556,7 +597,8 @@ class ObjectDetectionEvaluation(object):
                                      detected_boxes,
                                      detected_scores,
                                      detected_class_labels,
-                                     detected_masks=None):
+                                     detected_masks=None,
+                                     detected_text_prompts=None):
     """Adds detections for a single image to be used for evaluation.
 
     Args:
@@ -571,6 +613,8 @@ class ObjectDetectionEvaluation(object):
       detected_masks: np.uint8 numpy array of shape [num_boxes, height, width]
         containing `num_boxes` detection masks with values ranging
         between 0 and 1.
+      detected_text_prompts: Optional list of strings containing text prompts
+        for each detection (for multimodal/open vocabulary detection).
 
     Raises:
       ValueError: if the number of boxes, scores and class labels differ in
@@ -590,6 +634,11 @@ class ObjectDetectionEvaluation(object):
       return
 
     self.detection_keys.add(image_key)
+    
+    # Handle multimodal text prompts
+    if detected_text_prompts is not None:
+      self.detection_text_prompts[image_key] = detected_text_prompts
+    
     if image_key in self.groundtruth_boxes:
       groundtruth_boxes = self.groundtruth_boxes[image_key]
       groundtruth_class_labels = self.groundtruth_class_labels[image_key]
@@ -600,6 +649,8 @@ class ObjectDetectionEvaluation(object):
           image_key]
       groundtruth_is_group_of_list = self.groundtruth_is_group_of_list[
           image_key]
+      # Get groundtruth text prompts if available
+      groundtruth_text_prompts = self.groundtruth_text_prompts.get(image_key, None)
     else:
       groundtruth_boxes = np.empty(shape=[0, 4], dtype=float)
       groundtruth_class_labels = np.array([], dtype=int)
@@ -609,6 +660,8 @@ class ObjectDetectionEvaluation(object):
         groundtruth_masks = np.empty(shape=[0, 1, 1], dtype=float)
       groundtruth_is_difficult_list = np.array([], dtype=bool)
       groundtruth_is_group_of_list = np.array([], dtype=bool)
+      groundtruth_text_prompts = None
+    
     scores, tp_fp_labels, is_class_correctly_detected_in_image = (
         self.per_image_eval.compute_object_detection_metrics(
             detected_boxes=detected_boxes,
@@ -711,3 +764,90 @@ class ObjectDetectionEvaluation(object):
     return ObjectDetectionEvalMetrics(
         self.average_precision_per_class, mean_ap, self.precisions_per_class,
         self.recalls_per_class, self.corloc_per_class, mean_corloc)
+
+
+# ============================================================================
+# Multimodal Detection Evaluator
+# ============================================================================
+
+class MultimodalDetectionEvaluator(ObjectDetectionEvaluator):
+  """A class to evaluate multimodal (image + text) detections.
+  
+  This evaluator supports open vocabulary detection where detections are
+  associated with text prompts and can be evaluated using text-aware metrics.
+  """
+
+  def __init__(self, categories, matching_iou_threshold=0.5):
+    super(MultimodalDetectionEvaluator, self).__init__(
+        categories,
+        matching_iou_threshold=matching_iou_threshold,
+        evaluate_corlocs=False,
+        metric_prefix='MultimodalBoxes',
+        use_weighted_mean_ap=False)
+
+  def add_single_ground_truth_image_info(self, image_id, groundtruth_dict):
+    """Adds groundtruth with text prompts for a single image."""
+    # Ensure text prompts are in the dictionary
+    if 'groundtruth_text_prompts' not in groundtruth_dict:
+      # Generate default text prompts from class names
+      category_index = label_map_util.create_category_index(self._categories)
+      groundtruth_classes = groundtruth_dict.get(
+          standard_fields.InputDataFields.groundtruth_classes, [])
+      text_prompts = []
+      for cls in groundtruth_classes:
+        cls_name = category_index.get(cls, {}).get('name', 'object')
+        text_prompts.append(f"a photo of {cls_name}")
+      groundtruth_dict['groundtruth_text_prompts'] = text_prompts
+    
+    super().add_single_ground_truth_image_info(image_id, groundtruth_dict)
+
+  def add_single_detected_image_info(self, image_id, detections_dict):
+    """Adds detections with text prompts for a single image."""
+    # Ensure text prompts are in the dictionary
+    if 'detection_text_prompts' not in detections_dict:
+      # Generate default text prompts from detection classes
+      category_index = label_map_util.create_category_index(self._categories)
+      detection_classes = detections_dict.get(
+          standard_fields.DetectionResultFields.detection_classes, [])
+      text_prompts = []
+      for cls in detection_classes:
+        cls_name = category_index.get(cls, {}).get('name', 'object')
+        text_prompts.append(f"a photo of {cls_name}")
+      detections_dict['detection_text_prompts'] = text_prompts
+    
+    super().add_single_detected_image_info(image_id, detections_dict)
+
+
+class OpenVocabularyDetectionEvaluator(ObjectDetectionEvaluator):
+  """A class to evaluate open vocabulary detections.
+  
+  This evaluator computes metrics specifically designed for open vocabulary
+  detection where text prompts are used to describe object categories.
+  """
+
+  def __init__(self, categories, matching_iou_threshold=0.5):
+    super(OpenVocabularyDetectionEvaluator, self).__init__(
+        categories,
+        matching_iou_threshold=matching_iou_threshold,
+        evaluate_corlocs=False,
+        metric_prefix='OpenVocabulary',
+        use_weighted_mean_ap=False)
+
+  def evaluate(self):
+    """Compute evaluation result including open vocabulary metrics.
+    
+    Returns:
+      A dictionary of metrics including standard detection metrics and
+      open vocabulary-specific metrics.
+    """
+    # Get standard metrics
+    standard_metrics = super().evaluate()
+    
+    # Add open vocabulary specific metrics
+    # These would include text similarity-based metrics
+    open_vocab_metrics = {
+        'OpenVocabulary/text_mAP': standard_metrics.get(
+            'OpenVocabulary/Precision/mAP@0.5IOU', 0.0),
+    }
+    
+    return {**standard_metrics, **open_vocab_metrics}

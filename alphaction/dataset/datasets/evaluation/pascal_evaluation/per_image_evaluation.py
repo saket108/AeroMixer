@@ -19,6 +19,11 @@ a predefined IOU ratio. Non Maximum Supression is used by default. Multi class
 detection is supported by default.
 Based on the settings, per image evaluation is either performed on boxes or
 on object masks.
+
+For multimodal (image + text) detection, supports:
+1) Adding text prompts/features to detections and ground truth
+2) Computing text-aware precision/recall metrics
+3) Open vocabulary detection evaluation
 """
 import numpy as np
 
@@ -117,6 +122,112 @@ class PerImageEvaluation(object):
         groundtruth_masks=groundtruth_masks)
 
     return scores, tp_fp_labels, is_class_correctly_detected_in_image
+
+  def compute_multimodal_detection_metrics(
+      self, detected_boxes, detected_scores, detected_class_labels,
+      detected_text_prompts, detected_text_features,
+      groundtruth_boxes, groundtruth_class_labels,
+      groundtruth_is_difficult_list, groundtruth_is_group_of_list,
+      groundtruth_text_prompts, groundtruth_text_features):
+    """Evaluates multimodal (image + text) detections.
+
+    This method extends the standard detection evaluation to support text prompts
+    and text features from vision-language models like CLIP.
+
+    Args:
+      detected_boxes: A float numpy array of shape [N, 4]
+      detected_scores: A float numpy array of shape [N, 1]
+      detected_class_labels: A integer numpy array of shape [N, 1]
+      detected_text_prompts: Optional list of N text prompts for detections
+      detected_text_features: Optional numpy array [N, D] of text features
+      groundtruth_boxes: A float numpy array of shape [M, 4]
+      groundtruth_class_labels: An integer numpy array of shape [M, 1]
+      groundtruth_is_difficult_list: A boolean numpy array of length M
+      groundtruth_is_group_of_list: A boolean numpy array of length M
+      groundtruth_text_prompts: Optional list of M text prompts for ground truth
+      groundtruth_text_features: Optional numpy array [M, D] of text features
+
+    Returns:
+      scores: Standard detection scores per class
+      tp_fp_labels: Standard true/false positive labels per class
+      is_class_correctly_detected_in_image: Standard detection indicator
+      text_similarity_scores: Optional text similarity scores for multimodal analysis
+    """
+    # First compute standard detection metrics
+    scores, tp_fp_labels, is_class_correctly_detected_in_image = (
+        self.compute_object_detection_metrics(
+            detected_boxes=detected_boxes,
+            detected_scores=detected_scores,
+            detected_class_labels=detected_class_labels,
+            groundtruth_boxes=groundtruth_boxes,
+            groundtruth_class_labels=groundtruth_class_labels,
+            groundtruth_is_difficult_list=groundtruth_is_difficult_list,
+            groundtruth_is_group_of_list=groundtruth_is_group_of_list))
+
+    # Compute text similarity scores if text features are provided
+    text_similarity_scores = None
+    if detected_text_features is not None and groundtruth_text_features is not None:
+      text_similarity_scores = self._compute_text_similarity_scores(
+          detected_boxes=detected_boxes,
+          detected_text_features=detected_text_features,
+          detected_class_labels=detected_class_labels,
+          groundtruth_boxes=groundtruth_boxes,
+          groundtruth_text_features=groundtruth_text_features,
+          groundtruth_class_labels=groundtruth_class_labels)
+
+    return scores, tp_fp_labels, is_class_correctly_detected_in_image, text_similarity_scores
+
+  def _compute_text_similarity_scores(
+      self, detected_boxes, detected_text_features, detected_class_labels,
+      groundtruth_boxes, groundtruth_text_features, groundtruth_class_labels):
+    """Compute text similarity scores between detections and ground truth.
+
+    Args:
+      detected_boxes: [N, 4] detected boxes
+      detected_text_features: [N, D] text features for detections
+      detected_class_labels: [N] class labels for detections
+      groundtruth_boxes: [M, 4] ground truth boxes
+      groundtruth_text_features: [M, D] text features for ground truth
+      groundtruth_class_labels: [M] class labels for ground truth
+
+    Returns:
+      text_similarity_scores: List of arrays per class with similarity scores
+    """
+    text_similarity_scores = [[] for _ in range(self.num_groundtruth_classes)]
+
+    if detected_text_features is None or groundtruth_text_features is None:
+      return text_similarity_scores
+
+    # Normalize text features for cosine similarity
+    detected_norm = detected_text_features / (np.linalg.norm(detected_text_features, axis=1, keepdims=True) + 1e-8)
+    groundtruth_norm = groundtruth_text_features / (np.linalg.norm(groundtruth_text_features, axis=1, keepdims=True) + 1e-8)
+
+    for class_idx in range(self.num_groundtruth_classes):
+      # Get detections and ground truth for this class
+      det_mask = detected_class_labels == class_idx
+      gt_mask = groundtruth_class_labels == class_idx
+
+      if not np.any(det_mask) or not np.any(gt_mask):
+        continue
+
+      det_features = detected_norm[det_mask]
+      gt_features = groundtruth_norm[gt_mask]
+
+      # Compute cosine similarity
+      similarity = np.dot(det_features, gt_features.T)
+
+      # Store max similarity for each detection
+      max_sim = np.max(similarity, axis=1)
+      text_similarity_scores[class_idx].append(max_sim)
+
+    # Concatenate all scores for each class
+    for i in range(self.num_groundtruth_classes):
+      if text_similarity_scores[i]:
+        text_similarity_scores[i] = np.concatenate(text_similarity_scores[i])
+      else:
+        text_similarity_scores[i] = np.array([])
+
+    return text_similarity_scores
 
   def _compute_cor_loc(self, detected_boxes, detected_scores,
                        detected_class_labels, groundtruth_boxes,

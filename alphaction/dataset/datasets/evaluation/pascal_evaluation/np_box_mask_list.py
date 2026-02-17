@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Numpy BoxMaskList classes and functions."""
+"""Numpy BoxMaskList classes and functions for image and multimodal detection."""
 
 import numpy as np
 from . import np_box_list
@@ -25,6 +25,8 @@ class BoxMaskList(np_box_list.BoxList):
   BoxMaskList extends the np_box_list.BoxList to contain masks as well.
   In particular, its constructor receives both boxes and masks. Note that the
   masks correspond to the full image.
+  
+  For multimodal detection, also supports text prompts and text features.
   """
 
   def __init__(self, box_data, mask_data):
@@ -61,3 +63,65 @@ class BoxMaskList(np_box_list.BoxList):
     """
     return self.get_field('masks')
 
+  # ============================================================================
+  # Multimodal (Image + Text) Support
+  # ============================================================================
+
+  def add_text_prompts(self, text_prompts):
+    """Add text prompts for each bounding box.
+    
+    This is useful for open vocabulary detection where each detection
+    is associated with a text prompt.
+    
+    Args:
+      text_prompts: List of strings, each string is the text prompt for a box
+      
+    Raises:
+      ValueError: if length doesn't match number of boxes
+    """
+    if len(text_prompts) != self.num_boxes():
+      raise ValueError(f"Length of text_prompts ({len(text_prompts)}) must match "
+                       f"number of boxes ({self.num_boxes()})")
+    self.data['text_prompts'] = np.array(text_prompts)
+
+  def get_text_prompts(self):
+    """Get text prompts for each bounding box.
+    
+    Returns:
+      numpy array of text prompts
+    """
+    if not self.has_field('text_prompts'):
+      return None
+    return self.get_field('text_prompts')
+
+  def add_text_features(self, text_features):
+    """Add text features for each bounding box.
+    
+    This is useful for storing CLIP or other text encoder features
+    for each detection.
+    
+    Args:
+      text_features: numpy array of shape [N, D] where D is the feature dimension
+    """
+    if len(text_features) != self.num_boxes():
+      raise ValueError(f"Length of text_features ({len(text_features)}) must match "
+                       f"number of boxes ({self.num_boxes()})")
+    self.data['text_features'] = text_features
+
+  def get_text_features(self):
+    """Get text features for each bounding box.
+    
+    Returns:
+      numpy array of text features or None
+    """
+    if not self.has_field('text_features'):
+      return None
+    return self.get_field('text_features')
+
+  def has_text_features(self):
+    """Check if text features are available.
+    
+    Returns:
+      bool: True if text features are available
+    """
+    return self.has_field('text_features')

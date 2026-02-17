@@ -1,4 +1,5 @@
 import importlib
+import warnings
 
 import torch
 import numpy as np
@@ -47,6 +48,104 @@ def _load_pytorch_grad_cam_methods():
 _PYTORCH_GRAD_CAM_METHODS = _load_pytorch_grad_cam_methods()
 
 
+# ============================================================================
+# Text Handling Utilities for Multimodal CAM
+# ============================================================================
+
+def validate_text_input(text, allow_none=True):
+    """Validate text input for multimodal CAM.
+    
+    Args:
+        text: Text input (string, list of strings, or None)
+        allow_none: Whether to allow None as valid input
+        
+    Returns:
+        tuple: (is_valid, processed_text, error_message)
+    """
+    if text is None:
+        if allow_none:
+            return True, None, None
+        return False, None, "Text input cannot be None"
+    
+    # Handle list of texts (batch processing)
+    if isinstance(text, (list, tuple)):
+        if len(text) == 0:
+            return False, None, "Text list cannot be empty"
+        # Validate each text in the list
+        for i, t in enumerate(text):
+            if not isinstance(t, str):
+                return False, None, f"Text at index {i} is not a string: {type(t)}"
+            if len(t.strip()) == 0:
+                return False, None, f"Text at index {i} is empty"
+        return True, text, None
+    
+    # Handle single string
+    if isinstance(text, str):
+        if len(text.strip()) == 0:
+            return False, None, "Text input is empty"
+        return True, text.strip(), None
+    
+    return False, None, f"Invalid text type: {type(text)}. Expected str, list, or None"
+
+
+def tokenize_text(text, tokenizer, device='cuda'):
+    """Tokenize text input for multimodal CAM.
+    
+    Args:
+        text: Text input (string or list of strings)
+        tokenizer: Tokenizer to use
+        device: Device to move tokens to
+        
+    Returns:
+        torch.Tensor: Tokenized text
+    """
+    if text is None:
+        return None
+    
+    # Handle single string
+    if isinstance(text, str):
+        tokens = tokenizer(text).to(device)
+        return tokens
+    
+    # Handle list of strings (batch)
+    if isinstance(text, (list, tuple)):
+        tokens = tokenizer(text).to(device)
+        return tokens
+    
+    raise ValueError(f"Invalid text type for tokenization: {type(text)}")
+
+
+def process_text_for_cam(text, tokenizer, device='cuda'):
+    """Process text input for CAM with validation and tokenization.
+    
+    This is a convenience function that combines validation and tokenization.
+    
+    Args:
+        text: Text input (string, list of strings, or None)
+        tokenizer: Tokenizer to use
+        device: Device to move tokens to
+        
+    Returns:
+        tuple: (is_valid, tokens, error_message)
+    """
+    is_valid, processed_text, error = validate_text_input(text)
+    if not is_valid:
+        return False, None, error
+    
+    if processed_text is None:
+        return True, None, None
+    
+    try:
+        tokens = tokenize_text(processed_text, tokenizer, device)
+        return True, tokens, None
+    except Exception as e:
+        return False, None, f"Tokenization failed: {str(e)}"
+
+
+# ============================================================================
+# CAM Wrapper Class
+# ============================================================================
+
 class CAMWrapper(object):
     _ORDERED_CAMS = [
         "gradcam",
@@ -92,21 +191,24 @@ class CAMWrapper(object):
 
     def __init__(self, model, target_layers, tokenizer, cam_version, clip_version="ViT-B/32", preprocess=None, target_category=None, is_clip=True,
                  mute=False, cam_trans=None, is_transformer=False, attn_grad=True, **kwargs):
-        """[summary]
+        """
 
         Args:
-            model (model): [description]
-            target_layers (model layer): List[layers]
-            drop (bool, optional): [description]. Defaults to False.
-            cam_version (str, optional): [description]. Defaults to 'gradcam'.
-            target_category (int or tensor, optional): [description]. Defaults to None.
-            mute (bool, optional): [description]. Defaults to False.
-            channel_frame (csv, optional): [description]. Defaults to None.
-            channels (int, optional): [description]. Defaults to None.
-            cam_trans (function, optional): [description]. Defaults to None.
+            model (model): The model to use for CAM
+            target_layers (model layer): List of layers to extract features from
+            tokenizer: Tokenizer for text processing
+            cam_version (str): CAM method version
+            clip_version (str, optional): CLIP model version. Defaults to "ViT-B/32".
+            preprocess: Image preprocessing function
+            target_category (int or tensor, optional): Target category for CAM
+            is_clip (bool, optional): Whether model is CLIP-based. Defaults to True.
+            mute (bool, optional): Suppress output. Defaults to False.
+            cam_trans (function, optional): CAM transformation function
+            is_transformer (bool, optional): Whether model is transformer-based. Defaults to False.
+            attn_grad (bool, optional): Use attention gradients. Defaults to True.
 
         Raises:
-            Exception: [description]
+            ValueError: If CAM version is not found
         """
         self.mute = mute
         self.model = model
@@ -126,8 +228,23 @@ class CAMWrapper(object):
         if self.version not in self.CAM_DICT:
             available = ", ".join(self.CAM_LIST)
             raise ValueError(f"CAM version '{self.version}' not found. Available CAMs: {available}")
+        
+        # Validate tokenizer for multimodal methods
+        self._validate_tokenizer()
+        
         # define cam
         self._load_cam()
+
+    def _validate_tokenizer(self):
+        """Validate tokenizer for multimodal CAM methods."""
+        multimodal_methods = ['hilacam', 'hilacam_clipvip', 'ritsm', 'ritsm_clipvip', 'mhsa', 'mhsa_clipvip']
+        
+        if self.version in multimodal_methods and self.tokenizer is None:
+            warnings.warn(
+                f"CAM method '{self.version}' requires a tokenizer for multimodal input, "
+                "but None was provided. Text input will be ignored.",
+                UserWarning
+            )
 
     def _resolve_cam_version(self, cam_version):
         version = str(cam_version).strip().lower()
@@ -172,6 +289,18 @@ class CAMWrapper(object):
                                         use_cuda=True, is_clip=self.is_clip , reshape_transform=self.cam_trans, is_transformer=self.is_transformer)
 
     def getCAM(self, input_img, input_text, cam_size, target_category, return_logits=False):
+        """Generate CAM heatmap for image and optional text input.
+        
+        Args:
+            input_img: Input image tensor
+            input_text: Input text (tokenized or string)
+            cam_size: Size of output heatmap
+            target_category: Target category index
+            return_logits: Whether to return logits
+            
+        Returns:
+            numpy.ndarray: CAM heatmap
+        """
         cam_input = (input_img, input_text) if self.is_clip else input_img
         self.cam.img_size = cam_size
         if self.version in ['hilacam', 'hilacam_clipvip', 'ritsm', 'ritsm_clipvip']:
@@ -189,8 +318,6 @@ class CAMWrapper(object):
             grayscale_cam = grayscale_cam[0, :]
         elif self.version == 'rise':
             grayscale_cam = self.cam(inputs=cam_input, targets=target_category, image_size=cam_size)
-        # elif self.version == 'lime':
-        #     grayscale_cam = self.cam(inputs=cam_input, target=target_category, image_size=(224, 224), image=kwargs['image'])
         else:
             
             grayscale_cam = self.cam(input_tensor=cam_input, targets=target_category)
@@ -198,6 +325,16 @@ class CAMWrapper(object):
         return grayscale_cam
     
     def __call__(self, inputs, label, heatmap_size):
+        """Generate CAM heatmap.
+        
+        Args:
+            inputs: Image tensor or tuple of (image, text)
+            label: Target category
+            heatmap_size: Size of output heatmap
+            
+        Returns:
+            numpy.ndarray: CAM heatmap
+        """
 
         if isinstance(inputs, tuple):
             img, text = inputs[0], inputs[1]
@@ -207,8 +344,17 @@ class CAMWrapper(object):
 
         if self.preprocess is not None:
             img = self.preprocess(img)
-        # tokenize text
-        text_token = None if self.tokenizer is None else self.tokenizer(text).cuda()
+        
+        # Tokenize text with validation
+        text_token = None
+        if text is not None:
+            is_valid, text_token, error = process_text_for_cam(
+                text, self.tokenizer, device='cuda'
+            )
+            if not is_valid:
+                warnings.warn(f"Text processing failed: {error}. Proceeding without text.", UserWarning)
+                text_token = None
+        
         if len(img.shape) < 4:
             img = img.unsqueeze(0)
         if not img.is_cuda:
@@ -220,10 +366,30 @@ class CAMWrapper(object):
         return self.getCAM(img, text_token, heatmap_size, label)
     
     def getLogits(self, img, text):
+        """Get model logits for image-text pairs.
+        
+        Args:
+            img: Image tensor
+            text: Text input (string or list of strings)
+            
+        Returns:
+            tuple: (image_per_text_logits, text_per_image_logits)
+        """
         with torch.no_grad():
             if self.preprocess is not None:
                 img = self.preprocess(img)
-            img_per_text, text_per_img = self.model(img.unsqueeze(0).cuda(), self.tokenizer(text).cuda())
+            
+            # Tokenize text with validation
+            text_token = None
+            if text is not None:
+                is_valid, text_token, error = process_text_for_cam(
+                    text, self.tokenizer, device='cuda'
+                )
+                if not is_valid:
+                    warnings.warn(f"Text processing failed: {error}. Using empty text.", UserWarning)
+                    text_token = self.tokenizer("").cuda()
+            
+            img_per_text, text_per_img = self.model(img.unsqueeze(0).cuda(), text_token)
         return img_per_text, text_per_img
 
 

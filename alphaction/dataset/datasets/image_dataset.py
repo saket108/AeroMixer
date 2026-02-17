@@ -15,6 +15,11 @@ Supports multiple detection annotation formats:
 4) Pascal VOC:
    <VOC_ROOT>/Annotations/*.xml, <VOC_ROOT>/JPEGImages/*, and ImageSets/Main/*.txt
 
+Multimodal (Image + Text) Support:
+- Open vocabulary detection with text prompts
+- Text features from CLIP or other vision-language models
+- Text-aware evaluation metrics
+
 Returned samples keep the same tensor structure expected by the rest of the pipeline:
     (primary_input, secondary_input, whwh, boxes, label_arrs, extras, index)
 """
@@ -34,7 +39,10 @@ VALID_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
 
 class ImageDataset(torch.utils.data.Dataset):
-    """Pure image dataset with an image-first sample interface."""
+    """Pure image dataset with an image-first sample interface.
+    
+    Supports multimodal (image + text) mode for open vocabulary detection.
+    """
 
     def __init__(self, cfg, split):
         self.cfg = cfg
@@ -53,6 +61,11 @@ class ImageDataset(torch.utils.data.Dataset):
         self.text_input = None
         self.vocabulary = {"closed": [], "open": []}
         self._shape_cache = {}
+        
+        # Multimodal support
+        self.multimodal = getattr(cfg.DATA, "MULTIMODAL", False)
+        self.text_features = None
+        self.text_prompts = None
 
         if cfg.DATA.NUM_FRAMES != 1 or cfg.DATA.SAMPLING_RATE != 1:
             raise ValueError(
@@ -95,8 +108,10 @@ class ImageDataset(torch.utils.data.Dataset):
         self.closed_set_classes = self.class_names
         self.vocabulary["closed"] = list(self.class_names)
         self.vocabulary["open"] = list(self.class_names)
-        if self.open_vocabulary:
+        if self.open_vocabulary or self.multimodal:
             self.text_input = self._build_text_input()
+            # Generate text prompts for each class
+            self.text_prompts = self._generate_text_prompts()
 
         self.samples = []
         for img_rel in self.image_list:
@@ -112,7 +127,7 @@ class ImageDataset(torch.utils.data.Dataset):
             self.samples.append({"image_rel": img_rel, "boxes": boxes, "labels": labels})
 
         logger.info(
-            f"Loaded ImageDataset(split={split}, mode={self.annotation_mode}) with {len(self.samples)} images and "
+            f"Loaded ImageDataset(split={split}, mode={self.annotation_mode}, multimodal={self.multimodal}) with {len(self.samples)} images and "
             f"{sum(len(s['boxes']) for s in self.samples)} total boxes"
         )
 
@@ -128,11 +143,83 @@ class ImageDataset(torch.utils.data.Dataset):
         # Keep this property for compatibility with shared trainer/evaluator utilities.
         return self.num_images
 
+    def set_multimodal(self, multimodal):
+        """Enable or disable multimodal mode.
+        
+        Args:
+            multimodal: Boolean to enable/disable multimodal mode
+        """
+        self.multimodal = multimodal
+        if multimodal and self.text_input is None:
+            self.text_input = self._build_text_input()
+            self.text_prompts = self._generate_text_prompts()
+
+    def set_text_features(self, text_features):
+        """Set text features for multimodal detection.
+        
+        Args:
+            text_features: Numpy array of text features [num_classes, feature_dim]
+        """
+        self.text_features = text_features
+
+    def get_text_prompts(self, index=None):
+        """Get text prompts for the dataset or a specific sample.
+        
+        Args:
+            index: Optional sample index. If None, returns prompts for all classes.
+            
+        Returns:
+            List of text prompts
+        """
+        if self.text_prompts is None:
+            return None
+            
+        if index is None:
+            return self.text_prompts
+        
+        # Return prompts for a specific sample's labels
+        sample = self.samples[index]
+        labels = sample["labels"]
+        return [self.text_prompts[label] for label in labels]
+
+    def get_text_features(self, index=None):
+        """Get text features for the dataset or a specific sample.
+        
+        Args:
+            index: Optional sample index. If None, returns features for all classes.
+            
+        Returns:
+            Numpy array of text features or None if not available
+        """
+        if self.text_features is None:
+            return None
+            
+        if index is None:
+            return self.text_features
+        
+        # Return features for a specific sample's labels
+        sample = self.samples[index]
+        labels = sample["labels"]
+        return self.text_features[labels]
+
+    def _generate_text_prompts(self):
+        """Generate text prompts for each class.
+        
+        Returns:
+            List of text prompts for each class
+        """
+        prompts = []
+        for class_name in self.class_names:
+            # Generate common prompt formats
+            prompt = f"a photo of {class_name}"
+            prompts.append(prompt)
+        return prompts
+
     def get_sample_info(self, index):
         sample = self.samples[index]
         img_rel = sample["image_rel"]
         height, width = self._get_image_shape(img_rel)
-        return dict(
+        result = dict(
             image_id=img_rel,
             sample_id=index,
             boxes=sample["boxes"],
@@ -141,6 +228,13 @@ class ImageDataset(torch.utils.data.Dataset):
             width=width,
             resolution=(height, width),
         )
+        
+        # Add multimodal information if enabled
+        if self.multimodal:
+            result["text_prompts"] = self.get_text_prompts(index)
+            result["text_features"] = self.get_text_features(index)
+        
+        return result
 
     def get_video_info(self, index):
         # Backward-compatible alias used by legacy code paths.
@@ -178,14 +272,22 @@ class ImageDataset(torch.utils.data.Dataset):
 
         label_arrs = None
         if self._split == "train":
-            num_boxes = len(box_labels)
-            label_arrs = np.zeros((num_boxes, self.num_classes), dtype=np.int32)
-            if num_boxes > 0:
-                label_arrs[np.arange(num_boxes), box_labels] = 1
+           # IMPORTANT: STM expects class indices NOT one-hot
+            if len(box_labels) == 0:
+                label_arrs = np.zeros((0,), dtype=np.int64)
+            else:
+                label_arrs = box_labels.astype(np.int64)
+
 
         extras = {"extra_boxes": None, "image_rel": img_rel, "sample_id": index}
 
         boxes_out = boxes_proc if boxes_proc is None else boxes_proc.astype(np.float32)
+        
+        # Add multimodal extras if enabled
+        if self.multimodal:
+            extras["text_prompts"] = self.get_text_prompts(index)
+            if self.text_features is not None:
+                extras["text_features"] = self.get_text_features(index)
 
         return primary_input, secondary_input, whwh, boxes_out, label_arrs, extras, index
 
@@ -1057,3 +1159,8 @@ class ImageDataset(torch.utils.data.Dataset):
 
     def _normalize_relpath(self, path):
         return path.replace("\\", "/")
+
+
+# Aliases for backward compatibility
+MultimodalImageDataset = ImageDataset
+OpenVocabularyDataset = ImageDataset

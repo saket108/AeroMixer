@@ -61,6 +61,7 @@ class InputDataFields(object):
     num_groundtruth_boxes: number of groundtruth boxes.
     true_image_shapes: true shapes of images in the resized images, as resized
       images can be padded with zeros.
+    groundtruth_text_prompts: text prompts for ground truth boxes (for multimodal detection).
   """
   image = 'image'
   original_image = 'original_image'
@@ -86,6 +87,9 @@ class InputDataFields(object):
   groundtruth_weights = 'groundtruth_weights'
   num_groundtruth_boxes = 'num_groundtruth_boxes'
   true_image_shape = 'true_image_shape'
+  # Multimodal (Image + Text) fields
+  groundtruth_text_prompts = 'groundtruth_text_prompts'
+  groundtruth_text_features = 'groundtruth_text_features'
 
 
 class DetectionResultFields(object):
@@ -101,6 +105,8 @@ class DetectionResultFields(object):
     detection_boundaries: contains an object boundary for each detection box.
     detection_keypoints: contains detection keypoints for each detection box.
     num_detections: number of detections in the batch.
+    detection_text_prompts: text prompts for detections (for multimodal/open vocabulary detection).
+    detection_text_features: text features for detections (from CLIP or other text encoders).
   """
 
   source_id = 'source_id'
@@ -112,6 +118,9 @@ class DetectionResultFields(object):
   detection_boundaries = 'detection_boundaries'
   detection_keypoints = 'detection_keypoints'
   num_detections = 'num_detections'
+  # Multimodal (Image + Text) fields
+  detection_text_prompts = 'detection_text_prompts'
+  detection_text_features = 'detection_text_features'
 
 
 class BoxListFields(object):
@@ -127,6 +136,8 @@ class BoxListFields(object):
     boundaries: boundaries per bounding box.
     keypoints: keypoints per bounding box.
     keypoint_heatmaps: keypoint heatmaps per bounding box.
+    text_prompts: text prompts per bounding box (for multimodal detection).
+    text_features: text features per bounding box (from CLIP or other text encoders).
   """
   boxes = 'boxes'
   classes = 'classes'
@@ -137,6 +148,9 @@ class BoxListFields(object):
   boundaries = 'boundaries'
   keypoints = 'keypoints'
   keypoint_heatmaps = 'keypoint_heatmaps'
+  # Multimodal (Image + Text) fields
+  text_prompts = 'text_prompts'
+  text_features = 'text_features'
 
 
 class TfExampleFields(object):

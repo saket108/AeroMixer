@@ -18,6 +18,9 @@
 Example mask operations that are supported:
   * Areas: compute mask areas
   * IOU: pairwise intersection-over-union scores
+  
+For multimodal detection, also supports:
+  * Text-based similarity operations for open vocabulary detection
 """
 import numpy as np
 
@@ -117,3 +120,52 @@ def ioa(masks1, masks2):
   intersect = intersection(masks1, masks2)
   areas = np.expand_dims(area(masks2), axis=0)
   return intersect / (areas + EPSILON)
+
+
+# ============================================================================
+# Multimodal (Image + Text) Operations
+# ============================================================================
+
+def compute_text_similarity(mask_features, text_features):
+  """Compute cosine similarity between mask features and text features.
+  
+  This is useful for open vocabulary instance segmentation where we want to compute
+  similarity between mask features and text prompts.
+  
+  Args:
+    mask_features: numpy array of shape [N, D] representing mask features
+    text_features: numpy array of shape [M, D] representing text features
+    
+  Returns:
+    similarity_scores: numpy array of shape [N, M] representing 
+      cosine similarity between mask and text features
+  """
+  # Normalize features
+  mask_norm = mask_features / (np.linalg.norm(mask_features, axis=1, keepdims=True) + 1e-8)
+  text_norm = text_features / (np.linalg.norm(text_features, axis=1, keepdims=True) + 1e-8)
+  
+  # Compute cosine similarity
+  similarity_scores = np.dot(mask_norm, text_norm.T)
+  
+  return similarity_scores
+
+
+def mask_text_similarity(mask_features, text_feature):
+  """Compute similarity between multiple mask features and a single text feature.
+  
+  Args:
+    mask_features: numpy array of shape [N, D] representing mask features
+    text_feature: numpy array of shape [D] representing text feature
+    
+  Returns:
+    similarity_scores: numpy array of shape [N] representing 
+      cosine similarity between each mask and the text feature
+  """
+  # Normalize features
+  mask_norm = mask_features / (np.linalg.norm(mask_features, axis=1, keepdims=True) + 1e-8)
+  text_norm = text_feature / (np.linalg.norm(text_feature) + 1e-8)
+  
+  # Compute cosine similarity
+  similarity_scores = np.dot(mask_norm, text_norm)
+  
+  return similarity_scores

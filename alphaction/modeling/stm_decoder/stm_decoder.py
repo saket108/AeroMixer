@@ -110,10 +110,20 @@ class AdaptiveSTSamplingMixing(nn.Module):
         spatial_queries = self.adaptive_mixing_s(spatial_feats, spatial_queries)
         spatial_queries = self.norm_s(spatial_queries)
 
-        if temporal_queries is not None:
-            temporal_feats = torch.mean(sampled_feature, dim=4)                        # out_t has shape [B, n_query, n_groups, temporal_points, n_channels]
-            temporal_queries = self.adaptive_mixing_t(temporal_feats, temporal_queries)
-            temporal_queries = self.norm_t(temporal_queries)
+        # IMAGE MODE SAFE TEMPORAL HANDLING
+        if temporal_queries is not None and self.attention_t is not None:
+
+
+            # if only 1 frame -> skip temporal mixing
+            if sampled_feature.size(3) == 1:
+                # just pass through (acts like residual connection)
+                temporal_queries = temporal_queries
+
+            else:
+                temporal_feats = torch.mean(sampled_feature, dim=4)
+                temporal_queries = self.adaptive_mixing_t(temporal_feats, temporal_queries)
+                temporal_queries = self.norm_t(temporal_queries)
+
 
         return spatial_queries, temporal_queries
 
@@ -138,14 +148,16 @@ class AMStage(nn.Module):
                  num_classes_action=80,
                  open_vocabulary=False,
                  text_dim=768,
-                 cond_cls=False,
+                 cond_cls=False, 
                  fuse_cls=False,
                  fuse_factor=-1,
                  fuse_method='logit_fusion',
                  pretrained_action=False,
                  num_queries=100,
                  dest=False,
+                 image_mode=True,   # <-- ADD THIS
                  ):
+
 
 
         super(AMStage, self).__init__()
@@ -161,13 +173,19 @@ class AMStage(nn.Module):
         self.fuse_cls = fuse_cls
         self.fuse_method = fuse_method
         self.dest = dest
+        self.image_mode = image_mode
+        self.detection_only = True
 
-        if not pretrained_action:
-            # MHSA-T
+        # Build temporal branch ONLY for video
+        if (not pretrained_action) and (not image_mode):
+
             self.attention_t = MultiheadAttention(query_dim, num_heads, dropout)
             self.attention_norm_t = nn.LayerNorm(query_dim, eps=1e-5)
             self.ffn_t = FFN(query_dim, feedforward_channels, num_ffn_fcs, act_cfg=ffn_act_cfg, dropout=dropout)
             self.ffn_norm_t = nn.LayerNorm(query_dim, eps=1e-5)
+        else:
+            self.attention_t = None
+
 
         self.samplingmixing = AdaptiveSTSamplingMixing(
             spatial_points=spatial_points,
@@ -177,6 +195,7 @@ class AMStage(nn.Module):
             query_dim=query_dim,
             feat_channels=feat_channels,
             pretrained_action=pretrained_action,
+            image_mode=image_mode,
         )
 
         cls_feature_dim = query_dim
@@ -205,26 +224,31 @@ class AMStage(nn.Module):
                 _get_activation_layer(ffn_act_cfg))
         self.fc_reg = nn.Linear(reg_feature_dim, 4)
 
-        # action classifier
-        if dropout > 0:
-            self.dropout = nn.Dropout(dropout)
-        self.open_vocabulary = open_vocabulary
-        if not open_vocabulary:
-            self.action_cls_fcs = nn.ModuleList()
-            for _ in range(num_action_fcs):
-                self.action_cls_fcs.append(
-                    nn.Linear(action_feat_dim, action_feat_dim, bias=True))
-                self.action_cls_fcs.append(
-                    nn.LayerNorm(action_feat_dim, eps=1e-5))
-                self.action_cls_fcs.append(
-                    _get_activation_layer(ffn_act_cfg))
-            self.fc_action = nn.Linear(action_feat_dim, num_classes_action)
-        else:
-            if not pretrained_action:
-                self.linear_proj = nn.Linear(action_feat_dim, text_dim, bias=False) if action_feat_dim != text_dim else nn.Identity()
-        if self.fuse_cls:
-            if self.fuse_method == 'logit_fusion':
+        # ---------------- ACTION / TEXT HEAD (DISABLED FOR DETECTION) ----------------
+        self.open_vocabulary = False
+
+        if not self.detection_only:
+
+            if dropout > 0:
+                self.dropout = nn.Dropout(dropout)
+
+            if not open_vocabulary:
+                self.action_cls_fcs = nn.ModuleList()
+                for _ in range(num_action_fcs):
+                    self.action_cls_fcs.append(nn.Linear(action_feat_dim, action_feat_dim, bias=True))
+                    self.action_cls_fcs.append(nn.LayerNorm(action_feat_dim, eps=1e-5))
+                    self.action_cls_fcs.append(_get_activation_layer(ffn_act_cfg))
+
+                self.fc_action = nn.Linear(action_feat_dim, num_classes_action)
+
+            else:
+                if not pretrained_action:
+                    self.linear_proj = nn.Linear(action_feat_dim, text_dim, bias=False) if action_feat_dim != text_dim else nn.Identity()
+
+            if self.fuse_cls and self.fuse_method == 'logit_fusion':
                 self.logit_alpha = nn.Parameter(torch.ones(num_queries,) * fuse_factor)
+
+
         
         self.init_weights()
 
@@ -242,67 +266,6 @@ class AMStage(nn.Module):
         nn.init.zeros_(self.fc_reg.bias)
         nn.init.uniform_(self.iof_tau, 0.0, 4.0)
         self.samplingmixing.init_weights()
-
-
-    def _align_last_dim(self, tensor, target_dim):
-        current_dim = tensor.size(-1)
-        if current_dim == target_dim:
-            return tensor
-        if current_dim > target_dim:
-            return tensor[..., :target_dim]
-        return F.pad(tensor, (0, target_dim - current_dim), mode='constant', value=0.0)
-
-
-    def compute_fused_logits(self, vis_feat, text_feat, cls_feat, labels=None, scale=None, factor=0.1):
-        """ vis_feat: (B, N, D)
-            text_feat: (K, D)
-            cls_feat: (B, D)
-        """
-        text_mean = torch.stack(text_feat, dim=0).mean(dim=1) if isinstance(text_feat, list) else text_feat
-        target_dim = text_mean.size(-1)
-
-        vis_feat = self._align_last_dim(vis_feat, target_dim)
-        cls_feat = self._align_last_dim(cls_feat, target_dim)
-
-        # cosine angle of learned features
-        vis_normed = vis_feat / vis_feat.norm(dim=-1, keepdim=True)
-        text_normed = text_mean / text_mean.norm(dim=-1, keepdim=True)
-        cos_learned = vis_normed @ text_normed.transpose(-1, -2)  # (B, N, K)
-
-        # cosine angle of pretrained features
-        vis_pretrained = cls_feat / cls_feat.norm(dim=-1, keepdim=True)
-        cos_fixed = vis_pretrained @ text_normed.transpose(-1, -2)  # (B, K)
-        # logits fusion with learnable coefficients
-        alpha = self.logit_alpha.view(1, -1, 1)  # (1, N, 1)
-        if len(cos_fixed.size()) == 2:
-            cos_fixed = cos_fixed.unsqueeze(1)
-        logits = alpha * cos_fixed + (1 - alpha) * cos_learned
-        return logits
-
-
-    def learned_action_head(self, action_feat, text_features=None, tau_inv=100, pretrained_cls=None, labels=None):
-        N, n_query = action_feat.shape[:2]
-        text_mean = torch.stack(text_features, dim=0).mean(dim=1) if isinstance(text_features, list) else text_features
-
-        # linearly project visual feature into text embedding space
-        action_feat_proj = self.linear_proj(action_feat)
-        action_feat_proj = self._align_last_dim(action_feat_proj, text_mean.size(-1))
-
-        if self.fuse_cls:
-            if self.fuse_method == 'logit_fusion':
-                logits = self.compute_fused_logits(action_feat_proj, text_mean, pretrained_cls, labels=labels, scale=tau_inv)
-                action_score = logits * tau_inv
-                return action_score
-            else:
-                raise NotImplementedError
-
-        # compute cosine similarity, value in [-1, 1]
-        text_features_normed = text_mean / text_mean.norm(dim=-1, keepdim=True)
-        vis_features_normed = action_feat_proj / action_feat_proj.norm(dim=-1, keepdim=True)
-        action_score = (
-            tau_inv * vis_features_normed @ text_features_normed.transpose(-1, -2)
-        ).view(N, n_query, -1)  # (N, n_query, K)
-        return action_score
 
 
     def forward(self, features, proposal_boxes, spatial_queries, temporal_queries=None, 
@@ -453,22 +416,24 @@ class STMDecoder(nn.Module):
                 )
             self.decoder_stages.append(decoder_stage)
 
+        # ---------------- DETECTION ONLY ----------------
         object_weight = cfg.MODEL.STM.OBJECT_WEIGHT
-        giou_weight = cfg.MODEL.STM.GIOU_WEIGHT
-        l1_weight = cfg.MODEL.STM.L1_WEIGHT
-        action_weight = cfg.MODEL.STM.ACTION_WEIGHT
+        giou_weight   = cfg.MODEL.STM.GIOU_WEIGHT
+        l1_weight     = cfg.MODEL.STM.L1_WEIGHT
         background_weight = cfg.MODEL.STM.BACKGROUND_WEIGHT
-        action_focal_weight = cfg.MODEL.STM.FOCAL_WEIGHT
-        use_focal = action_focal_weight > 0
-        self.weight_dict = {"loss_ce": object_weight,
-                            "loss_bbox": l1_weight,
-                            "loss_giou": giou_weight}
-        if use_focal:
-            self.weight_dict.update({"loss_action_focal": action_focal_weight})
-        if not self.use_pretrained_action:
-            self.weight_dict.update({"loss_action": action_weight})
+
+        # Only the 3 losses DETR uses
+        self.weight_dict = {
+            "loss_ce": object_weight,     # classification
+            "loss_bbox": l1_weight,       # L1 box
+            "loss_giou": giou_weight      # GIoU box
+        }
+
+        use_focal = False
+
         
-        self.person_threshold = cfg.MODEL.STM.PERSON_THRESHOLD
+        self.score_threshold = cfg.MODEL.STM.SCORE_THRESHOLD
+
         self.cond_cls = cfg.MODEL.STM.COND_CLS
         self.fuse_cls = cfg.MODEL.STM.FUSE_CLS
         self.cond_type = cfg.MODEL.STM.COND_MODALITY
@@ -595,36 +560,119 @@ class STMDecoder(nn.Module):
 
 
     def make_targets(self, gt_boxes, whwh, labels):
-        targets = []
-        for box_in_clip, frame_size, label in zip(gt_boxes, whwh, labels):
-            target = {}
-            if not self.use_pretrained_action:
-                target['action_labels'] = torch.tensor(label, dtype=torch.float32, device=self.device)
-            target['boxes_xyxy'] = torch.tensor(box_in_clip, dtype=torch.float32, device=self.device)
-            # num_box, 4 (x1,y1,x2,y2) w.r.t augmented images unnormed
-            target['labels'] = torch.zeros(len(target['boxes_xyxy']), dtype=torch.int64, device=self.device)
-            target["image_size_xyxy"] = frame_size.to(self.device)
-            # (4,) whwh
-            image_size_xyxy_tgt = frame_size.unsqueeze(0).repeat(len(target['boxes_xyxy']), 1)
-            target["image_size_xyxy_tgt"] = image_size_xyxy_tgt.to(self.device)
+        """
+        Universal targets builder
+        Works for:
+           • image detection datasets
+           • video action datasets
+        """
 
-            # (num_box, 4) whwh
+        targets = []
+
+        for boxes_img, frame_size, label in zip(gt_boxes, whwh, labels):
+
+            target = {}
+
+            # ---------------- BOXES ----------------
+            boxes = torch.tensor(boxes_img, dtype=torch.float32, device=self.device)
+            target["boxes_xyxy"] = boxes
+
+            # ---------------- CLASS LABELS ----------------
+            if label is None or len(label) == 0:
+                class_ids = torch.zeros(len(boxes), dtype=torch.int64, device=self.device)
+
+            else:
+                label = torch.tensor(label, device=self.device)
+
+                # IMAGE DATASET → [N]
+                if label.ndim == 1:
+                    class_ids = label.long()
+
+                # VIDEO DATASET → one-hot [N, C]
+                elif label.ndim == 2:
+                    class_ids = torch.argmax(label, dim=1).long()
+
+                else:
+                    class_ids = torch.zeros(len(boxes), dtype=torch.int64, device=self.device)
+
+            target["labels"] = class_ids
+
+             # ---------------- IMAGE SIZE ----------------
+            target["image_size_xyxy"] = frame_size.to(self.device)
+            target["image_size_xyxy_tgt"] = frame_size.unsqueeze(0).repeat(len(boxes), 1).to(self.device)
+
+             # ---------------- ACTION LABELS ----------------
+            if not self.use_pretrained_action:
+                if label.ndim == 2:
+                    target["action_labels"] = label.float()
+                else:
+                    num_classes = self.criterion.num_classes
+                    target["action_labels"] = torch.nn.functional.one_hot(
+                        class_ids, num_classes=num_classes
+                    ).float()
+
             targets.append(target)
 
         return targets
 
 
+
     def get_prematched_text(self, vis_cls_feat, text_features, labels=None):
-        text_feat = torch.stack(text_features, dim=0).mean(dim=1) if isinstance(text_features, list) else text_features  # (K, D)
-        if labels is not None:
-            classes = torch.tensor([int(torch.tensor(onehots).argmax(dim=1)[0]) for onehots in labels], device=vis_cls_feat.device).long()  # (B,)
-            text_prematched = text_feat[classes]  # (B, D)
+        """
+        Match each image/video sample with one text embedding.
+
+        Works for:
+            - image classification labels (class id)
+            - one-hot action labels
+            - no labels (inference mode → use cosine similarity)
+        """
+
+        # text_features may be list[K][D] OR tensor[K,D]
+        if isinstance(text_features, list):
+            text_feat = torch.stack(text_features, dim=0).mean(dim=1)
         else:
-            text_feat = text_feat / text_feat.norm(dim=-1, keepdim=True)
-            vis_feat = vis_cls_feat / vis_cls_feat.norm(dim=-1, keepdim=True)
-            pred_cls = (vis_feat @ text_feat.t()).argmax(dim=-1)  # (B,)
-            text_prematched = text_feat[pred_cls] # (B, D)
+            text_feat = text_features  # (K, D)
+
+        text_feat = text_feat.to(vis_cls_feat.device)
+
+        # ---------------------------------------------------
+        # TRAINING MODE → use GT labels
+        # ---------------------------------------------------
+        if labels is not None and len(labels) > 0:
+
+            classes = []
+            for lab in labels:
+
+                lab = torch.tensor(lab, device=vis_cls_feat.device)
+
+                # case 1: class id [N]
+                if lab.ndim == 1:
+                    cls = lab[0].long()
+
+                # case 2: one-hot [N,C]
+                elif lab.ndim == 2:
+                    cls = torch.argmax(lab[0]).long()
+
+                else:
+                    cls = torch.tensor(0, device=vis_cls_feat.device)
+
+                classes.append(cls)
+
+            classes = torch.stack(classes)
+            text_prematched = text_feat[classes]   # (B, D)
+
+        # ---------------------------------------------------
+        # INFERENCE MODE → cosine similarity matching
+        # ---------------------------------------------------
+        else:
+            text_norm = text_feat / text_feat.norm(dim=-1, keepdim=True)
+            vis_norm = vis_cls_feat / vis_cls_feat.norm(dim=-1, keepdim=True)
+
+            pred_cls = torch.argmax(vis_norm @ text_norm.t(), dim=-1)
+            text_prematched = text_feat[pred_cls]
+
         return text_prematched
+
 
 
     def get_prematched_token_text(self, text_token_feats, text_features, pretrained_cls, labels=None):
@@ -657,58 +705,120 @@ class STMDecoder(nn.Module):
         return inverted_mask.view(-1, tgt_len, src_len)
 
 
-    def forward(self, features, whwh, gt_boxes=None, labels=None, extras={}, part_forward=-1, text_features=None, tau_inv=100, cls_feat=None, patch_feat=None, text_token_feats=None):
+    def forward(
+        self,
+        features,
+        whwh,
+        gt_boxes=None,
+        labels=None,
+        extras={},
+        part_forward=-1,
+        text_features=None,
+        tau_inv=100,
+        cls_feat=None,
+        patch_feat=None,
+        text_token_feats=None
+    ):
 
+        # optional conditioning (kept for compatibility)
         cond = None
         if self.cond_cls:
             cond = cls_feat if self.cond_type == 'visual' else self.get_prematched_text(cls_feat, text_features, labels)
 
-        proposal_boxes, spatial_queries, temporal_queries = self._decode_init_queries(whwh, cond=cond, extras=extras)
+        # initialize queries
+        proposal_boxes, spatial_queries, temporal_queries = self._decode_init_queries(
+            whwh, cond=cond, extras=extras
+        )
 
         inter_class_logits = []
         inter_pred_bboxes = []
-        inter_action_logits = []
-        inter_entropy_outs = []
-        inter_chn_loss = []
+
         B, N, _ = spatial_queries.size()
 
+        # decoder refinement stages
         for decoder_stage in self.decoder_stages:
-            objectness_score, action_score, delta_xyzr, spatial_queries, temporal_queries = \
-                decoder_stage(features, proposal_boxes, spatial_queries, temporal_queries, text_features=text_features, tau_inv=tau_inv, vis_cls_feat=cls_feat, patch_feat=patch_feat, text_token_feats=text_token_feats, labels=labels, cond=cond)
+
+            cls_logits, _, delta_xyzr, spatial_queries, temporal_queries = decoder_stage(
+                features,
+                proposal_boxes,
+                spatial_queries,
+                temporal_queries,
+                text_features=text_features,
+                tau_inv=tau_inv,
+                vis_cls_feat=cls_feat,
+                patch_feat=patch_feat,
+                text_token_feats=text_token_feats,
+                labels=labels,
+                cond=cond
+           )
+
             proposal_boxes, pred_boxes = refine_xyzr(proposal_boxes, delta_xyzr)
 
-            inter_class_logits.append(objectness_score)
+            inter_class_logits.append(cls_logits)
             inter_pred_bboxes.append(pred_boxes)
-            inter_action_logits.append(action_score)
 
+        # ==========================================================
+        # INFERENCE MODE 
+        # ========================================================= =
         if not self.training:
-            action_scores = inter_action_logits[-1]  # leave the logits_to_prob transform into evaluation
-            scores = F.softmax(inter_class_logits[-1], dim=-1)[:, :, 0]
-            # scores: B*100
-            action_score_list = []
-            box_list = []
+
+            logits = inter_class_logits[-1]      # [B, Q, C+1]
+            boxes  = inter_pred_bboxes[-1]       # [B, Q, 4]
+
+            probs = logits.softmax(-1)
+
+            # remove "no-object" class (last class)
+            scores, labels = probs[..., :-1].max(-1)
+
+            results = []
             for i in range(B):
-                selected_idx = scores[i] >= self.person_threshold
-                if not any(selected_idx):
-                    _,selected_idx = torch.topk(scores[i],k=3,dim=-1)
 
-                action_score = action_scores[i][selected_idx]
-                box = inter_pred_bboxes[-1][i][selected_idx]
-                cur_whwh = whwh[i]
-                box = clip_boxes_tensor(box, cur_whwh[1], cur_whwh[0])
-                box[:, 0::2] /= cur_whwh[0]
-                box[:, 1::2] /= cur_whwh[1]
-                action_score_list.append(action_score)
-                box_list.append(box)
-            return action_score_list, box_list
+                # filter low confidence predictions
+                keep = torch.where(scores[i] > self.score_threshold)[0]
 
+                # fallback: keep top-10 if nothing detected
+                if keep.numel() == 0:
+                    k = min(10, scores.size(1))
+                    keep = torch.topk(scores[i], k=k).indices
+
+                cur_boxes = boxes[i][keep]
+                cur_scores = scores[i][keep]
+                cur_labels = labels[i][keep]
+
+                # normalize boxes to 0-1
+                h, w = whwh[i][1], whwh[i][0]
+                cur_boxes = cur_boxes.clone()
+                cur_boxes[:, 0::2] /= w
+                cur_boxes[:, 1::2] /= h
+
+                results.append({
+                    "scores": cur_scores,
+                    "labels": cur_labels,
+                    "boxes": cur_boxes
+                })
+
+            return results
+
+
+        # ==========================================================
+        # TRAINING MODE
+        # ==========================================================
         targets = self.make_targets(gt_boxes, whwh, labels)
-        losses = self.person_detector_loss(inter_class_logits, inter_pred_bboxes, self.criterion, targets, inter_action_logits, output_entropy=inter_entropy_outs, output_chn=inter_chn_loss)
-        weight_dict = self.weight_dict
-        for k in losses.keys():
-            if k in weight_dict:
-                losses[k] *= weight_dict[k]
-        return losses
 
-def build_stm_decoder(cfg):
-    return STMDecoder(cfg)
+        output = {
+            "pred_logits": inter_class_logits[-1],
+            "pred_boxes": inter_pred_bboxes[-1],
+        }
+
+        losses = self.criterion(output, targets)
+
+        # apply weights
+        for k in losses.keys():
+            if k in self.weight_dict:
+               losses[k] *= self.weight_dict[k]
+
+        return losses
+    
+    def build_stm_decoder(cfg):
+        return STMDecoder(cfg)
+

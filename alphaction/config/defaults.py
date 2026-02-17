@@ -11,8 +11,7 @@ _C.DATA = CN()
 # The path to the data directory.
 _C.DATA.PATH_TO_DATA_DIR = ""
 
-# Input mode controls image/video specific assumptions in loaders/eval.
-# Supported generic modes: "image" and "video".
+# Input mode - now only supports "image" (video support removed)
 _C.DATA.INPUT_TYPE = "image"
 
 # Relative frame/image directory under PATH_TO_DATA_DIR.
@@ -45,20 +44,10 @@ _C.DATA.TEST_MAX_SCALE = 1333 # int
 
 _C.DATA.FIX_SIZE = []
 
-# Input videos may has different fps, convert it to the target video fps before
-# frame sampling.
-_C.DATA.TARGET_FPS = 30
-
-# Decoding backend, options include `pyav` or `torchvision`
-_C.DATA.DECODING_BACKEND = "pyav"
-
-# If True, perform random horizontal flip on the video frames during training.
-_C.DATA.RANDOM_FLIP = True
-
 # If True, revert the default input channel (RBG <-> BGR).
 _C.DATA.REVERSE_INPUT_CHANNEL = False
 
-# Use ['images'] for image pipeline, ['videos'] for generic video pipeline.
+# Use ['images'] for image pipeline only (video support removed).
 _C.DATA.DATASETS = ['images']
 
 _C.DATA.OPEN_VOCABULARY = False
@@ -69,13 +58,31 @@ _C.DATA.VOCAB_OPEN_FILE = ""
 _C.DATA.REFINE_VOCAB = False
 
 # -----------------------------------------------------------------------------
-# Legacy benchmark-specific dataset blocks were removed.
-# Generic image/video datasets use DATA + IMAGES sections below.
+# Multimodal Text Configuration
 # -----------------------------------------------------------------------------
+_C.DATA.TEXT = CN()
 
-# -----------------------------------------------------------------------------#
+# Text input type: "single" (one text per image) or "multiple" (multiple texts per image)
+_C.DATA.TEXT.INPUT_TYPE = "single"
+
+# Maximum text length (in tokens)
+_C.DATA.TEXT.MAX_LENGTH = 77
+
+# Text prompt template for open vocabulary detection
+# Use {class_name} as placeholder for class name
+_C.DATA.TEXT.PROMPT_TEMPLATE = "a photo of {}"
+
+# Whether to use CLIP text encoder for text features
+_C.DATA.TEXT.USE_CLIP_ENCODER = True
+
+# Text augmentation options
+_C.DATA.TEXT.AUGMENT = CN()
+_C.DATA.TEXT.AUGMENT.ENABLE = False
+_C.DATA.TEXT.AUGMENT.NUM_VARIATIONS = 5
+
+# -----------------------------------------------------------------------------
 # Image Dataset preprocess options
-# -----------------------------------------------------------------------------#
+# -----------------------------------------------------------------------------
 _C.IMAGES = CN()
 _C.IMAGES.BGR = False
 _C.IMAGES.TRAIN_USE_COLOR_AUGMENTATION = False
@@ -339,6 +346,12 @@ _C.MODEL.CLIP.CAM_SAMPLING = 'topk'
 _C.MODEL.CLIP.CAM_METHOD = ''
 _C.MODEL.CLIP.USE_PERSON_EMBED = False
 
+# Multimodal CAM specific settings
+_C.MODEL.CLIP.CAM = CN()
+_C.MODEL.CLIP.CAM.METHOD = 'ritsm'  # Default CAM method for CLIP
+_C.MODEL.CLIP.CAM.ATTN_GRAD = True
+_C.MODEL.CLIP.CAM.USE_TEXT = True  # Enable text input for CAM
+
 
 # CLIP-ViP
 _C.MODEL.CLIPViP = CN()
@@ -364,6 +377,12 @@ _C.MODEL.CLIPViP.USE_ATTN_LAST = False
 _C.MODEL.CLIPViP.CAM_METHOD = ''
 _C.MODEL.CLIPViP.CAM_SAMPLING = 'topk'
 _C.MODEL.CLIPViP.USE_PERSON_EMBED = False
+
+# Multimodal CAM specific settings for CLIP-ViP
+_C.MODEL.CLIPViP.CAM = CN()
+_C.MODEL.CLIPViP.CAM.METHOD = 'ritsm_clipvip'  # Default CAM method for CLIP-ViP
+_C.MODEL.CLIPViP.CAM.ATTN_GRAD = True
+_C.MODEL.CLIPViP.CAM.USE_TEXT = True  # Enable text input for CAM
 
 
 _C.MODEL.ViCLIP = CN()
@@ -400,22 +419,16 @@ _C.SOLVER.CHECKPOINT_PERIOD = 1
 _C.SOLVER.EVAL_PERIOD = 1
 _C.SOLVER.EVAL_AFTER = 2
 
-# Number of training samples per batch for video datasets.
-_C.SOLVER.VIDEOS_PER_BATCH = 16
-# Number of training samples per batch for image datasets. Use -1 to fallback
-# to SOLVER.VIDEOS_PER_BATCH.
-_C.SOLVER.IMAGES_PER_BATCH = -1
+# Number of training samples per batch for image datasets.
+_C.SOLVER.IMAGES_PER_BATCH = 16
 _C.SOLVER.OPTIMIZING_METHOD = 'adamw'
 
 # ---------------------------------------------------------------------------- #
 # Specific test options
 # ------------------------------------------------------FCLIP---------------------- #
 _C.TEST = CN()
-# Number of test samples per batch for video datasets.
-_C.TEST.VIDEOS_PER_BATCH = 16
-# Number of test samples per batch for image datasets. Use -1 to fallback
-# to TEST.VIDEOS_PER_BATCH.
-_C.TEST.IMAGES_PER_BATCH = -1
+# Number of test samples per batch for image datasets.
+_C.TEST.IMAGES_PER_BATCH = 16
 _C.TEST.EVAL_OPEN = False
 _C.TEST.METRIC = 'frame_ap'
 _C.TEST.SMALL_OPEN_WORLD = False
@@ -427,4 +440,3 @@ _C.TEST.PRIOR_BOX_TEST = False
 # Misc options
 # ---------------------------------------------------------------------------- #
 _C.OUTPUT_DIR = "."
-

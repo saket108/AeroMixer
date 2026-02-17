@@ -1,5 +1,46 @@
+# Demo outputs
 demos/
+
+# CLIP and CAM dependencies
 hila_clip/
 pytorch_grad_cam/
+
+# Video outputs (not used in image-only mode but kept for compatibility)
 *.gif
 *.mp4
+*.avi
+*.mov
+*.mkv
+
+# Multimodal output files
+*.heatmap.png
+*_cam_visualization.png
+*_text_overlay.png
+*_multimodal_output.png
+
+# Model outputs
+*.pth
+*.pt
+*.onnx
+
+# Log files
+*.log
+logs/
+
+# Tensorboard
+runs/
+events.out.tfevents.*
+
+# Jupyter notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

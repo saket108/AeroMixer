@@ -18,6 +18,9 @@
 Example box operations that are supported:
   * Areas: compute bounding box areas
   * IOU: pairwise intersection-over-union scores
+  
+For multimodal detection, also supports:
+  * Text-based operations for open vocabulary detection
 """
 import numpy as np
 
@@ -395,3 +398,73 @@ def filter_scores_greater_than(box_mask_list, thresh):
   high_score_indices = np.reshape(np.where(np.greater(scores, thresh)),
                                   [-1]).astype(np.int32)
   return gather(box_mask_list, high_score_indices)
+
+
+# ============================================================================
+# Multimodal (Image + Text) Operations
+# ============================================================================
+
+def filter_by_text_similarity(box_mask_list, text_features, threshold=0.5):
+  """Filter boxes based on text similarity scores.
+  
+  This is useful for open vocabulary detection where we want to keep
+  detections that are similar to the text prompt.
+  
+  Args:
+    box_mask_list: BoxMaskList holding N boxes. Must contain 'text_features' field.
+    text_features: Text features to compare against (shape: [D])
+    threshold: Minimum similarity score threshold
+    
+  Returns:
+    BoxMaskList with filtered boxes
+  """
+  if not box_mask_list.has_field('text_features'):
+    raise ValueError('box_mask_list must have text_features field')
+  
+  det_text_features = box_mask_list.get_field('text_features')
+  
+  # Normalize features
+  det_norm = det_text_features / (np.linalg.norm(det_text_features, axis=1, keepdims=True) + 1e-8)
+  text_norm = text_features / (np.linalg.norm(text_features) + 1e-8)
+  
+  # Compute similarity
+  similarities = np.dot(det_norm, text_norm)
+  
+  # Filter
+  high_sim_indices = np.where(similarities >= threshold)[0]
+  
+  return gather(box_mask_list, high_sim_indices)
+
+
+def sort_by_text_similarity(box_mask_list, text_features):
+  """Sort boxes by text similarity scores.
+  
+  Args:
+    box_mask_list: BoxMaskList holding N boxes. Must contain 'text_features' field.
+    text_features: Text features to compare against (shape: [D])
+    
+  Returns:
+    BoxMaskList sorted by text similarity (descending)
+  """
+  if not box_mask_list.has_field('text_features'):
+    raise ValueError('box_mask_list must have text_features field')
+  
+  det_text_features = box_mask_list.get_field('text_features')
+  
+  # Normalize features
+  det_norm = det_text_features / (np.linalg.norm(det_text_features, axis=1, keepdims=True) + 1e-8)
+  text_norm = text_features / (np.linalg.norm(text_features) + 1e-8)
+  
+  # Compute similarity
+  similarities = np.dot(det_norm, text_norm)
+  
+  # Add as new field
+  boxlist = box_mask_list
+  box_mask_list_copy = np_box_mask_list.BoxMaskList(
+      box_data=boxlist.get(),
+      mask_data=boxlist.get_masks())
+  for field in boxlist.get_extra_fields():
+    box_mask_list_copy.add_field(field, boxlist.get_field(field))
+  box_mask_list_copy.add_field('text_similarity', similarities)
+  
+  return sort_by_field(box_mask_list_copy, 'text_similarity', np_box_list_ops.SortOrder.DESCEND)
