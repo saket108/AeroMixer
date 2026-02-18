@@ -91,7 +91,7 @@ class ResNLBlock(nn.Module):
     Residual block with Non-local for 2D image processing.
     """
     def __init__(self, cfg, dim_in, dim_out, stride, num_blocks, dim_inner, 
-                 nonlocal_inds=[], nonlocal_group=1, nonlocal_pool=[]):
+                 nonlocal_inds=[], nonlocal_group=1, nonlocal_pool=[], dilation=1):
         super(ResNLBlock, self).__init__()
         
         self.blocks = []

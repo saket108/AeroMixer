@@ -45,10 +45,17 @@ class CLIPVisualEncoder(nn.Module):
 
     def forward(self, x_list):
         dtype = x_list[0].dtype
-        x = x_list[0].type(self.dtype)  # slow video (b, 3, 16, 256, ?)
-        B, C, T, H, W = x.size()
-        x = x.permute(0, 2, 1, 3, 4).contiguous().view(-1, C, H, W)  # (b*16, 3, 256, ?)
-        x = self.conv1(x)  # shape = [b*16, width=1024, 18, ?]
+        visual_inputs = x_list[0].type(self.dtype)
+
+        # Image-first path: accept 4D images and auto-wrap them as a single-frame sequence.
+        if visual_inputs.dim() == 4:
+            visual_inputs = visual_inputs.unsqueeze(2)
+        elif visual_inputs.dim() != 5:
+            raise ValueError(f"Expected 4D or 5D input, got shape {tuple(visual_inputs.shape)}")
+
+        B, C, T, H, W = visual_inputs.size()
+        x = visual_inputs.permute(0, 2, 1, 3, 4).contiguous().view(-1, C, H, W)
+        x = self.conv1(x)
         ws = x.size()[-2:]
         x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [b*16, width, 18*]
         x = x.permute(0, 2, 1).contiguous()  # shape = [N=b*16, L=18*, D=width]
@@ -75,7 +82,7 @@ class CLIPVisualEncoder(nn.Module):
         if self.use_cls_feat:
             y = self.ln_post(xseq[:, 0, :].reshape(B, T, -1))  # semantic features, (B, T, D)
             if self.proj is not None:
-                y = (y @ self.proj).mean(dim=1).type(dtype)  # average CLS feat over multiple frames
+                y = (y @ self.proj).mean(dim=1).type(dtype)  # average CLS feat across sequence length
             return [x, x, x, x], y
         
         return [x, x, x, x]

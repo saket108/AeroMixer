@@ -1,12 +1,16 @@
 import torch
 import torch.nn.functional as F
 from torch import nn
-from torchvision.ops import sigmoid_focal_loss
 from scipy.optimize import linear_sum_assignment
 
-from . import box_ops
-from .misc import accuracy, get_world_size, is_dist_avail_and_initialized
-from .box_ops import generalized_box_iou
+from .stm_decoder.util.misc import accuracy, get_world_size, is_dist_avail_and_initialized
+from .stm_decoder.util.box_ops import generalized_box_iou
+
+
+def cat(tensors, dim=0):
+    if len(tensors) == 1:
+        return tensors[0]
+    return torch.cat(tensors, dim=dim)
 
 
 # -------------------------------------------------------------

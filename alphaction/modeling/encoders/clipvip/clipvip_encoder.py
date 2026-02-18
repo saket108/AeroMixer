@@ -74,7 +74,7 @@ class CLIPViPVisualEncoder(nn.Module):
             self.visual_projection = clipmodel.visual_projection
     
 
-    def get_video_features(self,
+    def get_visual_features(self,
         pixel_values: Optional[torch.FloatTensor] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
@@ -106,7 +106,7 @@ class CLIPViPVisualEncoder(nn.Module):
         out_dict = {'st_feats': st_feats, 'ws': ws}
 
         if self.use_cls_feat:
-            # get the features of video proxy tokens
+            # get the features of proxy tokens
             pooled_output = vision_outputs[1]  # pooled_output
             cls_feats = self.visual_projection(pooled_output)
             # normalize
@@ -127,12 +127,12 @@ class CLIPViPVisualEncoder(nn.Module):
         return x
 
 
-    def forward(self, video):
-        inputs = {"pixel_values": video, 
+    def forward(self, visual_inputs):
+        inputs = {"pixel_values": visual_inputs, 
                   "interpolator": interpolate_pos_embed_online}
         with torch.no_grad() if not self.requires_backprop else nullcontext():
-            video_features = self.get_video_features(**inputs)
-        return video_features
+            visual_features = self.get_visual_features(**inputs)
+        return visual_features
 
 
 class CLIPViPTextEncoder(nn.Module):
@@ -181,11 +181,11 @@ class CLIPViPTextEncoder(nn.Module):
 
 
     def init_soft_prompt(self, context_init=None):
-        """ context_init: "a video of "
+        """ context_init: prompt prefix (e.g., "a photo of ")
         """
         # get the initial context embeddings
         batch_enc = self.tokenizer.batch_encode_plus(
-            [context_init.strip()],  # 'a video of'
+            [context_init.strip()],
             max_length=self.context_len,
             padding="max_length",
             truncation=True,
@@ -194,7 +194,7 @@ class CLIPViPTextEncoder(nn.Module):
         token_ctx = batch_enc.input_ids.to(self.device)  # (1, L)
         n_ctx = token_ctx[0].argmax() - 1  # the number of context tokens (=3)
 
-        # the embeding of "[SOS] a video of [EOS]..."
+        # the embeding of "[SOS] <prompt> [EOS]..."
         with torch.no_grad() if not self.requires_backprop else nullcontext():
             embedding = self.embedder.token_embedding(token_ctx)
         embed_ctx = embedding[0, 1 : 1 + n_ctx, :]  # (n_ctx, D)
@@ -203,12 +203,12 @@ class CLIPViPTextEncoder(nn.Module):
 
     def get_token_embeddings(self, batch_text):
         batch_enc = self.tokenizer.batch_encode_plus(
-            batch_text,  # e.g., "a video of person golfing"
+            batch_text,  # e.g., "a photo of person golfing"
             max_length=self.context_len,
             padding="max_length",
             truncation=True,
             return_tensors="pt"
-        )  # tokens of "[SOS] a video of person golfing [EOS]..."
+        )  # tokens of "[SOS] <prompt> person golfing [EOS]..."
         token_ids = batch_enc.input_ids.to(self.device)  # (K_new, L)
         token_masks = batch_enc.attention_mask.to(self.device)  # (K_new, L)
         eos_idx = token_ids.argmax(dim=-1)
@@ -252,7 +252,7 @@ class CLIPViPTextEncoder(nn.Module):
 
 
     def construct_token_embeds(self, use_soft_prompt=False, cond=None):
-        """ Construct the input embeddings of "[SOS] a video of person golfing [EOS] ..."      
+        """ Construct input embeddings for "[SOS] <prompt> class-text [EOS] ...".
         """ 
         class_token_embed = [self.vocab_token_embeddings[vocab]['embed'] for vocab in self.text_data.keys()]
         class_token_embed = torch.stack(class_token_embed, dim=0)  # (K, L, D)
@@ -488,12 +488,12 @@ class CLIPViPModel(nn.Module):
     
 
     def forward(self, x_list):
-        # Check if input is image (4D: B,C,H,W) or video (5D: B,C,T,H,W)
+        # Check if input is image (4D: B,C,H,W) or sequence (5D: B,C,T,H,W)
         x = x_list[0]
         
         if self.image_mode:
             # Image mode: input is (B, C, H, W)
-            # For image mode, we treat it as a single-frame video
+            # For image mode, treat the image as a single-frame sequence.
             B, C, H, W = x.size()
             
             # encoder forward - expects 5D, so add dummy temporal dim
@@ -512,7 +512,7 @@ class CLIPViPModel(nn.Module):
             
             return [x, x, x, x]
         else:
-            # Video mode: input is (B, C, T, H, W)
+            # Sequence mode: input is (B, C, T, H, W)
             x = x.permute(0, 2, 1, 3, 4).contiguous()
             B, T = x.size()[:2]
 
@@ -692,7 +692,7 @@ class CLIPViPModel(nn.Module):
             
         # create a diagonal matrix
         image_attn_blocks = list(dict(self.visual_encoder.vision_model.encoder.layers.named_children()).values())
-        num_proxy, num_tokens = image_attn_blocks[0].attn_probs['inter'].shape[-2:]  # number of video proxy tokens and all tokens
+        num_proxy, num_tokens = image_attn_blocks[0].attn_probs['inter'].shape[-2:]  # number of proxy tokens and all tokens
         num_patches = image_attn_blocks[0].attn_probs['intra'].size(1)  # number of patches within each frame
         num_frames = int((num_tokens - num_proxy) / num_patches)
         num_heads = self.visual_encoder.vision_model.config.num_attention_heads  # =12
@@ -851,8 +851,11 @@ def load_pretrained_clipvip(model, cfg):
     model.freeze_modules(mismatched_keys)
 
 
-def build_clipvip_backbone(cfg, image_mode=False):
+def build_clipvip_backbone(cfg, image_mode=None):
     cfg.MODEL.CLIPViP.update(USE_CLS_FEAT=cfg.MODEL.STM.USE_CLS_FEAT)
+
+    if image_mode is None:
+        image_mode = getattr(cfg.DATA, "INPUT_TYPE", "image") == "image"
 
     model = CLIPViPModel(cfg.MODEL.CLIPViP, image_mode=image_mode)
 

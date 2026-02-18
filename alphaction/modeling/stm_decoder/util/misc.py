@@ -15,6 +15,7 @@ from typing import Optional, List
 import torch
 import torch.distributed as dist
 from torch import Tensor
+from torch.types import Device
 
 # needed due to empty tensor bug in pytorch and torchvision 0.5
 import torchvision
@@ -285,8 +286,7 @@ class NestedTensor(object):
         self.tensors = tensors
         self.mask = mask
 
-    def to(self, device):
-        # type: (Device) -> NestedTensor # noqa
+    def to(self, device: Device) -> "NestedTensor":
         cast_tensor = self.tensors.to(device)
         mask = self.mask
         if mask is not None:

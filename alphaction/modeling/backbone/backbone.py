@@ -62,8 +62,9 @@ def build_clip_vit_backbone(cfg):
 @registry.BACKBONES.register("ViP-B/16")
 @registry.BACKBONES.register("ViP-B/32")
 def build_clipvip_backbone(cfg):
-    from alphaction.modeling.encoders.clipvip.clipvip_encoder import build_clipvip_backbone
-    model = build_clipvip_backbone(cfg)
+    from alphaction.modeling.encoders.clipvip.clipvip_encoder import build_clipvip_backbone as build_clipvip_model
+    image_mode = getattr(cfg.DATA, "INPUT_TYPE", "image") == "image"
+    model = build_clipvip_model(cfg, image_mode=image_mode)
     return model
 
 
