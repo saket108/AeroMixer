@@ -417,9 +417,10 @@ class CLIPViPTextEncoder(nn.Module):
 
 
 class CLIPViPModel(nn.Module):
-    def __init__(self, cfg, dtype=torch.float32):
+    def __init__(self, cfg, dtype=torch.float32, image_mode=False):
         super(CLIPViPModel, self).__init__()
         self.dtype = dtype
+        self.image_mode = image_mode
 
         # load the CLIPViP model
         clipmodel = load_clipmodel(cfg)
@@ -487,22 +488,46 @@ class CLIPViPModel(nn.Module):
     
 
     def forward(self, x_list):
-        x = x_list[0]  # slow video (b, C=3, T=16, H=256, W=?)
-        x = x.permute(0, 2, 1, 3, 4).contiguous()
-        B, T = x.size()[:2]
-
-        # encoder forward
-        x_dict = self.visual_encoder(x)
-
-        # parse output
-        x, ws = x_dict['st_feats'], x_dict['ws']
-        x = x.reshape(B, T, ws[0], ws[1], -1).permute(0, 4, 1, 2, 3).contiguous()  # (B, D, T, h, w)
-
-        if self.visual_encoder.use_cls_feat:
-            cls_feat = x_dict['cls_feats']
-            return [x, x, x, x], cls_feat
+        # Check if input is image (4D: B,C,H,W) or video (5D: B,C,T,H,W)
+        x = x_list[0]
         
-        return [x, x, x, x]
+        if self.image_mode:
+            # Image mode: input is (B, C, H, W)
+            # For image mode, we treat it as a single-frame video
+            B, C, H, W = x.size()
+            
+            # encoder forward - expects 5D, so add dummy temporal dim
+            x_5d = x.unsqueeze(2)  # (B, C, 1, H, W)
+            x_dict = self.visual_encoder(x_5d)
+            
+            # parse output - remove temporal dimension
+            x, ws = x_dict['st_feats'], x_dict['ws']
+            # x is now (B, D, 1, h, w) - squeeze the temporal dim
+            x = x.squeeze(2)  # (B, D, h, w)
+            
+            if self.visual_encoder.use_cls_feat:
+                cls_feat = x_dict['cls_feats']
+                # cls_feat is (B, D) for single frame
+                return [x, x, x, x], cls_feat
+            
+            return [x, x, x, x]
+        else:
+            # Video mode: input is (B, C, T, H, W)
+            x = x.permute(0, 2, 1, 3, 4).contiguous()
+            B, T = x.size()[:2]
+
+            # encoder forward
+            x_dict = self.visual_encoder(x)
+
+            # parse output
+            x, ws = x_dict['st_feats'], x_dict['ws']
+            x = x.reshape(B, T, ws[0], ws[1], -1).permute(0, 4, 1, 2, 3).contiguous()  # (B, D, T, h, w)
+
+            if self.visual_encoder.use_cls_feat:
+                cls_feat = x_dict['cls_feats']
+                return [x, x, x, x], cls_feat
+            
+            return [x, x, x, x]
 
 
     def forward_text(self, device=torch.device('cuda'), cond=None):
@@ -826,10 +851,10 @@ def load_pretrained_clipvip(model, cfg):
     model.freeze_modules(mismatched_keys)
 
 
-def build_clipvip_backbone(cfg):
+def build_clipvip_backbone(cfg, image_mode=False):
     cfg.MODEL.CLIPViP.update(USE_CLS_FEAT=cfg.MODEL.STM.USE_CLS_FEAT)
 
-    model = CLIPViPModel(cfg.MODEL.CLIPViP)
+    model = CLIPViPModel(cfg.MODEL.CLIPViP, image_mode=image_mode)
 
     # load the pre-trained CLIPViP model
     load_pretrained_clipvip(model, cfg.MODEL.CLIPViP)

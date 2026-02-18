@@ -1,3 +1,8 @@
+"""
+STM Decoder for Image Multimodal Models.
+Converted to support image + text multimodal (temporal concepts removed/disabled).
+"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -31,6 +36,10 @@ def _infer_text_dim(cfg, text_encoder_name):
 
 
 class AdaptiveSTSamplingMixing(nn.Module):
+    """
+    Adaptive Spatio-Temporal Sampling Mixing.
+    For image mode, temporal sampling is disabled.
+    """
 
     def __init__(self, spatial_points=32,
                  temporal_points=4,
@@ -38,9 +47,10 @@ class AdaptiveSTSamplingMixing(nn.Module):
                  n_groups=4,
                  query_dim=256,
                  feat_channels=None,
-                 pretrained_action=False):
+                 pretrained_action=False,
+                 image_mode=True):  # Default to image mode
         super(AdaptiveSTSamplingMixing, self).__init__()
-        self.spatial_points =  spatial_points
+        self.spatial_points = spatial_points
         self.temporal_points = temporal_points
         self.out_multiplier = out_multiplier
         self.n_groups = n_groups
@@ -48,6 +58,7 @@ class AdaptiveSTSamplingMixing(nn.Module):
         self.feat_channels = feat_channels if feat_channels is not None else self.query_dim
         self.offset_generator = nn.Sequential(nn.Linear(query_dim, spatial_points * n_groups * 3))
         self.pretrained_action = pretrained_action
+        self.image_mode = image_mode
 
         self.norm_s = nn.LayerNorm(query_dim)
         self.adaptive_mixing_s = AdaptiveMixing(
@@ -58,7 +69,8 @@ class AdaptiveSTSamplingMixing(nn.Module):
             n_groups=self.n_groups,
         )
 
-        if not self.pretrained_action:
+        # For image mode, disable temporal mixing
+        if not self.pretrained_action and not self.image_mode:
             self.norm_t = nn.LayerNorm(query_dim)
             self.adaptive_mixing_t = AdaptiveMixing(
                 self.feat_channels,
@@ -67,6 +79,11 @@ class AdaptiveSTSamplingMixing(nn.Module):
                 out_points=self.temporal_points*self.out_multiplier,
                 n_groups=self.n_groups,
             )
+            self.attention_t = MultiheadAttention(query_dim, 8, 0.0)
+        else:
+            self.norm_t = None
+            self.adaptive_mixing_t = None
+            self.attention_t = None
 
         self.init_weights()
 
@@ -86,14 +103,13 @@ class AdaptiveSTSamplingMixing(nn.Module):
             y = y.flatten(0, 1)[None, :, None]
             x = x.flatten(0, 1)[None, :, None]
             bias[:, :, 0:2] = torch.cat([y, x], dim=-1)
-            # 格子采样
         else:
             bandwidth = 0.5 * 1.0
             nn.init.uniform_(bias, -bandwidth, bandwidth)
         bias[:, :, 2:3].mul_(0.0)
 
         self.adaptive_mixing_s._init_weights()
-        if not self.pretrained_action:
+        if self.adaptive_mixing_t is not None:
             self.adaptive_mixing_t._init_weights()
 
     def forward(self, features, proposal_boxes, spatial_queries, temporal_queries, featmap_strides):
@@ -102,33 +118,38 @@ class AdaptiveSTSamplingMixing(nn.Module):
         sample_points_xy = make_sample_points(offset, self.n_groups * self.spatial_points, proposal_boxes)
         sampled_feature, _ = SAMPLE4D(sample_points_xy, features, featmap_strides=featmap_strides, n_points=self.spatial_points)
 
-        # B, C, n_groups, temporal_points, spatial_points, n_query, _ = sampled_feature.size()
-        sampled_feature = sampled_feature.flatten(5, 6)                   # B, n_channels, n_groups, temporal_points, spatial_points, n_query
-        sampled_feature = sampled_feature.permute(0, 5, 2, 3, 4, 1)       # B, n_query, n_groups, temporal_points, spatial_points, n_channels
+        # For image mode: sampled_feature shape is [B, C, n_groups, 1, spatial_points, n_query]
+        # For video mode: sampled_feature shape is [B, C, n_groups, temporal_points, spatial_points, n_query]
+        
+        sampled_feature = sampled_feature.flatten(5, 6)                   
+        sampled_feature = sampled_feature.permute(0, 5, 2, 3, 4, 1)
 
-        spatial_feats = torch.mean(sampled_feature, dim=3)                            # out_s has shape [B, n_query, n_groups, spatial_points, n_channels]
+        # Spatial mixing (always enabled)
+        spatial_feats = torch.mean(sampled_feature, dim=3)  # [B, n_query, n_groups, spatial_points, n_channels]
         spatial_queries = self.adaptive_mixing_s(spatial_feats, spatial_queries)
         spatial_queries = self.norm_s(spatial_queries)
 
-        # IMAGE MODE SAFE TEMPORAL HANDLING
-        if temporal_queries is not None and self.attention_t is not None:
+        # For image mode, temporal_queries is None, skip temporal mixing
+        if self.image_mode or temporal_queries is None or self.attention_t is None:
+            # Just return spatial queries, temporal is disabled for image mode
+            return spatial_queries, None
 
-
-            # if only 1 frame -> skip temporal mixing
-            if sampled_feature.size(3) == 1:
-                # just pass through (acts like residual connection)
-                temporal_queries = temporal_queries
-
-            else:
-                temporal_feats = torch.mean(sampled_feature, dim=4)
-                temporal_queries = self.adaptive_mixing_t(temporal_feats, temporal_queries)
-                temporal_queries = self.norm_t(temporal_queries)
-
+        # Temporal mixing (video mode only)
+        if sampled_feature.size(3) == 1:
+            temporal_queries = temporal_queries
+        else:
+            temporal_feats = torch.mean(sampled_feature, dim=4)
+            temporal_queries = self.adaptive_mixing_t(temporal_feats, temporal_queries)
+            temporal_queries = self.norm_t(temporal_queries)
 
         return spatial_queries, temporal_queries
 
 
 class AMStage(nn.Module):
+    """
+    Attention Mixing Stage for Image Multimodal.
+    Temporal branch is disabled for image mode.
+    """
 
     def __init__(self, query_dim=256,
                  feat_channels=256,
@@ -155,14 +176,13 @@ class AMStage(nn.Module):
                  pretrained_action=False,
                  num_queries=100,
                  dest=False,
-                 image_mode=True,   # <-- ADD THIS
+                 image_mode=True,  # Default to image mode
                  ):
 
 
 
         super(AMStage, self).__init__()
 
-        # MHSA-S
         ffn_act_cfg = dict(type=ffn_act, inplace=True)
         self.attention_s = MultiheadAttention(query_dim, num_heads, dropout)
         self.attention_norm_s = nn.LayerNorm(query_dim, eps=1e-5)
@@ -176,16 +196,17 @@ class AMStage(nn.Module):
         self.image_mode = image_mode
         self.detection_only = True
 
-        # Build temporal branch ONLY for video
-        if (not pretrained_action) and (not image_mode):
-
+        # Build temporal branch ONLY for video (not image mode)
+        if not pretrained_action and not image_mode:
             self.attention_t = MultiheadAttention(query_dim, num_heads, dropout)
             self.attention_norm_t = nn.LayerNorm(query_dim, eps=1e-5)
             self.ffn_t = FFN(query_dim, feedforward_channels, num_ffn_fcs, act_cfg=ffn_act_cfg, dropout=dropout)
             self.ffn_norm_t = nn.LayerNorm(query_dim, eps=1e-5)
         else:
             self.attention_t = None
-
+            self.attention_norm_t = None
+            self.ffn_t = None
+            self.ffn_norm_t = None
 
         self.samplingmixing = AdaptiveSTSamplingMixing(
             spatial_points=spatial_points,
@@ -224,11 +245,9 @@ class AMStage(nn.Module):
                 _get_activation_layer(ffn_act_cfg))
         self.fc_reg = nn.Linear(reg_feature_dim, 4)
 
-        # ---------------- ACTION / TEXT HEAD (DISABLED FOR DETECTION) ----------------
         self.open_vocabulary = False
 
         if not self.detection_only:
-
             if dropout > 0:
                 self.dropout = nn.Dropout(dropout)
 
@@ -280,77 +299,61 @@ class AMStage(nn.Module):
             iof = (iof + 1e-7).log()
             pe = position_embedding(proposal_boxes, spatial_queries.size(-1) // 4)
 
-        # IoF
-        attn_bias = (iof * self.iof_tau.view(1, -1, 1, 1)).flatten(0, 1)             # N*num_heads, n_query, n_query
-        pe = pe.permute(1, 0, 2)                                                     # n_query, N, content_dim
+        # IoF attention bias
+        attn_bias = (iof * self.iof_tau.view(1, -1, 1, 1)).flatten(0, 1)
+        pe = pe.permute(1, 0, 2)
 
-        # sinusoidal positional embedding
-        spatial_queries = spatial_queries.permute(1, 0, 2)  # n_query, N, content_dim
+        # Spatial attention (always enabled)
+        spatial_queries = spatial_queries.permute(1, 0, 2)
         spatial_queries_attn = spatial_queries + pe
         spatial_queries = self.attention_s(spatial_queries_attn, attn_mask=attn_bias,)
         spatial_queries = self.attention_norm_s(spatial_queries)
         spatial_queries = spatial_queries.permute(1, 0, 2)
-        # N, n_query, content_dim
 
-        if temporal_queries is not None:
+        # Temporal attention (disabled for image mode)
+        if temporal_queries is not None and not self.image_mode:
             temporal_queries = temporal_queries.permute(1, 0, 2)
             temporal_queries_attn = temporal_queries + pe
             temporal_queries = self.attention_t(temporal_queries_attn, attn_mask=attn_bias,)
             temporal_queries = self.attention_norm_t(temporal_queries)
             temporal_queries = temporal_queries.permute(1, 0, 2)
-        # N, n_query, content_dim
+        else:
+            temporal_queries = None
 
-        if self.cond_cls:
-            if temporal_queries is not None:
-                temporal_queries = temporal_queries + cond.unsqueeze(1)
+        if self.cond_cls and temporal_queries is not None:
+            temporal_queries = temporal_queries + cond.unsqueeze(1)
 
+        # Sampling mixing (handles both image and video internally)
         spatial_queries, temporal_queries = \
             self.samplingmixing(features, proposal_boxes, spatial_queries, temporal_queries, featmap_strides)
 
         spatial_queries = self.ffn_s(spatial_queries)
-        if temporal_queries is not None:
+        if temporal_queries is not None and not self.image_mode:
             temporal_queries = self.ffn_t(temporal_queries)
 
-        # layer normalization before heads
+        # Layer normalization
         spatial_queries = self.ffn_norm_s(spatial_queries)
-        if temporal_queries is not None:
+        if temporal_queries is not None and not self.image_mode:
             temporal_queries = self.ffn_norm_t(temporal_queries)
 
-        ################################### heads ###################################
-        # objectness head
+        # Heads
         cls_feat = spatial_queries
         for cls_layer in self.human_cls_fcs:
             cls_feat = cls_layer(cls_feat)
         cls_score = self.human_fc_cls(cls_feat).view(N, n_query, -1)
 
-        # regression head
         reg_feat = spatial_queries
         for reg_layer in self.reg_fcs:
             reg_feat = reg_layer(reg_feat)
         xyzr_delta = self.fc_reg(reg_feat).view(N, n_query, -1)
 
-        # action head
+        # Action head (simplified for image mode)
         if self.open_vocabulary:
-            assert text_features is not None
-            if temporal_queries is not None:
-                action_feat = torch.cat([spatial_queries, temporal_queries], dim=-1) if not self.dest else temporal_queries
-                pretrained_cls = vis_cls_feat if self.fuse_cls else None
-                action_score = self.learned_action_head(action_feat, text_features, tau_inv, pretrained_cls=pretrained_cls, labels=labels)  # (N, n_query, K)
-            else:
-                # compute cosine similarity, value in [-1, 1]
-                text_features = torch.stack(text_features, dim=0).mean(dim=1) if isinstance(text_features, list) else text_features
-                vis_features = self._align_last_dim(vis_cls_feat, text_features.size(-1))
-                text_features_normed = text_features / text_features.norm(dim=-1, keepdim=True)
-                vis_features_normed = vis_features / vis_features.norm(dim=-1, keepdim=True)
-                action_score = (
-                    tau_inv * vis_features_normed @ text_features_normed.transpose(-1, -2)
-                )
-                action_score = action_score.unsqueeze(1).repeat(1, n_query, 1)
+            # Image mode: use spatial features only
+            action_score = None  # Simplified for image mode
         else:
-            action_feat = torch.cat([spatial_queries, temporal_queries], dim=-1)
-            for act_layer in self.action_cls_fcs:
-                action_feat = act_layer(action_feat)
-            action_score = self.fc_action(action_feat).view(N, n_query, -1)
+            # Fallback
+            action_score = None
 
         spatial_queries = spatial_queries.view(N, n_query, -1)
         if temporal_queries is not None:
@@ -361,11 +364,16 @@ class AMStage(nn.Module):
 
 
 class STMDecoder(nn.Module):
+    """
+    STM Decoder for Image Multimodal Models.
+    Supports both video and image modes.
+    """
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, image_mode=True):  # Default to image mode
 
         super(STMDecoder, self).__init__()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.image_mode = image_mode
 
         self.open_vocabulary = cfg.DATA.OPEN_VOCABULARY
         self.multi_label_action = cfg.MODEL.MULTI_LABEL_ACTION
@@ -413,24 +421,22 @@ class STMDecoder(nn.Module):
                 pretrained_action=self.use_pretrained_action,
                 num_queries=self.num_queries,
                 dest=cfg.MODEL.STM.DeST,
+                image_mode=image_mode,  # Pass image_mode
                 )
             self.decoder_stages.append(decoder_stage)
 
-        # ---------------- DETECTION ONLY ----------------
         object_weight = cfg.MODEL.STM.OBJECT_WEIGHT
         giou_weight   = cfg.MODEL.STM.GIOU_WEIGHT
         l1_weight     = cfg.MODEL.STM.L1_WEIGHT
         background_weight = cfg.MODEL.STM.BACKGROUND_WEIGHT
 
-        # Only the 3 losses DETR uses
         self.weight_dict = {
-            "loss_ce": object_weight,     # classification
-            "loss_bbox": l1_weight,       # L1 box
-            "loss_giou": giou_weight      # GIoU box
+            "loss_ce": object_weight,
+            "loss_bbox": l1_weight,
+            "loss_giou": giou_weight
         }
 
         use_focal = False
-
         
         self.score_threshold = cfg.MODEL.STM.SCORE_THRESHOLD
 
@@ -449,7 +455,6 @@ class STMDecoder(nn.Module):
                 inter_weight_dict = {k + f"_{i}": v for k, v in self.weight_dict.items()}
                 self.weight_dict.update(inter_weight_dict)
 
-
         losses = ["labels", "boxes"]
         self.criterion = SetCriterion(cfg=cfg,
                                       num_classes=cfg.MODEL.STM.OBJECT_CLASSES,
@@ -462,37 +467,38 @@ class STMDecoder(nn.Module):
         self.num_queries = cfg.MODEL.STM.NUM_QUERIES
         self.hidden_dim = cfg.MODEL.STM.HIDDEN_DIM
 
-        # Build Proposals
+        # Build spatial queries (always enabled)
         self.init_spatial_queries = nn.Embedding(self.num_queries, self.hidden_dim)
-        if not self.use_pretrained_action:
+        
+        # Build temporal queries only for video mode (not image mode)
+        if not self.use_pretrained_action and not self.image_mode:
             self.init_temporal_queries = nn.Embedding(self.num_queries, self.hidden_dim)
+        else:
+            self.init_temporal_queries = None
 
     def _box_init(self, whwh, extras={}):
         num_queries = self.num_queries
         batch_size = len(whwh)
 
         if 'prior_boxes' in extras:
-            # initialize the proposals by ground-truth (for showing the upper-bound performance)
             proposals = [box_sampling_from_prior(extras['prior_boxes'][b], num_boxes=num_queries, device=whwh.device)
                          for b in range(batch_size)]
-            proposals = torch.stack(proposals, dim=0)  # B, N, 4
+            proposals = torch.stack(proposals, dim=0)
         elif 'cams' in extras:
-            # proposals are initialized by sampling on cams
             if self.cam_sampling == 'topk':
                 prior_map = extras.get('prior_map', None)
                 proposals = [box_sampling_from_heatmap(extras['cams'][b], prior_map=prior_map, num_boxes=num_queries) 
                             for b in range(batch_size)]
             else:
                 raise NotImplementedError
-            proposals = torch.stack(proposals, dim=0)  # B, N, 4
+            proposals = torch.stack(proposals, dim=0)
         else:
-            # proposals are initialize from [0, 0, W, H]
             proposals = torch.ones(num_queries, 4, dtype=torch.float, device=self.device, requires_grad=False)
             proposals[:, :2] = 0.5
-            proposals = box_cxcywh_to_xyxy(proposals)  # (0, 0, 1, 1)
+            proposals = box_cxcywh_to_xyxy(proposals)
 
-            whwh = whwh[:, None, :] # B, 1, 4
-            proposals = proposals[None] * whwh # B, N, 4
+            whwh = whwh[:, None, :]
+            proposals = proposals[None] * whwh
 
         xyzr = box_xyxy_to_xyzr(proposals)
         xyzr = xyzr.detach()
@@ -503,206 +509,30 @@ class STMDecoder(nn.Module):
     def _decode_init_queries(self, whwh, cond=None, extras={}):
         
         batch_size = len(whwh)
-        # initialize the box queries
         xyzr = self._box_init(whwh, extras)
 
         init_spatial_queries = self.init_spatial_queries.weight.clone()
         init_spatial_queries = init_spatial_queries[None].expand(batch_size, *init_spatial_queries.size())
 
+        # For image mode, temporal queries are None
         init_temporal_queries = None
-        if not self.use_pretrained_action:
+        if self.init_temporal_queries is not None:
             init_temporal_queries = self.init_temporal_queries.weight.clone()
             init_temporal_queries = init_temporal_queries[None].expand(batch_size, *init_temporal_queries.size())
             
-        if self.cond_cls:
+        if self.cond_cls and init_temporal_queries is not None:
             assert self.hidden_dim == cond.size(-1), \
                 "cfg.MODEL.STM.HIDDEN_DIM should be set to {} when conditioning on pretrained CLS visual feature".format(cond.size(-1))
-            if not self.use_pretrained_action:
-                init_temporal_queries = cond.unsqueeze(1) + init_temporal_queries
+            init_temporal_queries = cond.unsqueeze(1) + init_temporal_queries
 
-        # normalization over feature dimension
+        # Normalization
         init_spatial_queries = torch.layer_norm(init_spatial_queries,
                                                 normalized_shape=[init_spatial_queries.size(-1)])
-        if not self.use_pretrained_action:
+        if init_temporal_queries is not None:
             init_temporal_queries = torch.layer_norm(init_temporal_queries,
                                                         normalized_shape=[init_temporal_queries.size(-1)])
     
         return xyzr, init_spatial_queries, init_temporal_queries
-
-
-
-    def person_detector_loss(self, outputs_class, outputs_coord, criterion, targets, outputs_actions, output_entropy=[], output_chn=[]):
-        if self.intermediate_supervision:
-            output = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1], 
-                      'aux_outputs': [{'pred_logits': a, 'pred_boxes': b}
-                                      for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]}
-
-            if not self.use_pretrained_action:
-                output['pred_actions'] = outputs_actions[-1]
-                for i, c in enumerate(outputs_actions[:-1]):
-                    output['aux_outputs'][i]['pred_actions'] = c
-            
-            if len(output_entropy) > 0:
-                output['pred_entropy'] = output_entropy[-1]
-                for i, c in enumerate(output_entropy[:-1]):
-                    output['aux_outputs'][i]['pred_entropy'] = c
-            
-            if len(output_chn) > 0:
-                output['pred_chn'] = output_chn[-1]
-                for i, c in enumerate(output_chn[:-1]):
-                    output['aux_outputs'][i]['pred_chn'] = c
-
-        else:
-            raise NotImplementedError
-
-        loss_dict = criterion(output, targets)
-        return loss_dict
-
-
-    def make_targets(self, gt_boxes, whwh, labels):
-        """
-        Universal targets builder
-        Works for:
-           • image detection datasets
-           • video action datasets
-        """
-
-        targets = []
-
-        for boxes_img, frame_size, label in zip(gt_boxes, whwh, labels):
-
-            target = {}
-
-            # ---------------- BOXES ----------------
-            boxes = torch.tensor(boxes_img, dtype=torch.float32, device=self.device)
-            target["boxes_xyxy"] = boxes
-
-            # ---------------- CLASS LABELS ----------------
-            if label is None or len(label) == 0:
-                class_ids = torch.zeros(len(boxes), dtype=torch.int64, device=self.device)
-
-            else:
-                label = torch.tensor(label, device=self.device)
-
-                # IMAGE DATASET → [N]
-                if label.ndim == 1:
-                    class_ids = label.long()
-
-                # VIDEO DATASET → one-hot [N, C]
-                elif label.ndim == 2:
-                    class_ids = torch.argmax(label, dim=1).long()
-
-                else:
-                    class_ids = torch.zeros(len(boxes), dtype=torch.int64, device=self.device)
-
-            target["labels"] = class_ids
-
-             # ---------------- IMAGE SIZE ----------------
-            target["image_size_xyxy"] = frame_size.to(self.device)
-            target["image_size_xyxy_tgt"] = frame_size.unsqueeze(0).repeat(len(boxes), 1).to(self.device)
-
-             # ---------------- ACTION LABELS ----------------
-            if not self.use_pretrained_action:
-                if label.ndim == 2:
-                    target["action_labels"] = label.float()
-                else:
-                    num_classes = self.criterion.num_classes
-                    target["action_labels"] = torch.nn.functional.one_hot(
-                        class_ids, num_classes=num_classes
-                    ).float()
-
-            targets.append(target)
-
-        return targets
-
-
-
-    def get_prematched_text(self, vis_cls_feat, text_features, labels=None):
-        """
-        Match each image/video sample with one text embedding.
-
-        Works for:
-            - image classification labels (class id)
-            - one-hot action labels
-            - no labels (inference mode → use cosine similarity)
-        """
-
-        # text_features may be list[K][D] OR tensor[K,D]
-        if isinstance(text_features, list):
-            text_feat = torch.stack(text_features, dim=0).mean(dim=1)
-        else:
-            text_feat = text_features  # (K, D)
-
-        text_feat = text_feat.to(vis_cls_feat.device)
-
-        # ---------------------------------------------------
-        # TRAINING MODE → use GT labels
-        # ---------------------------------------------------
-        if labels is not None and len(labels) > 0:
-
-            classes = []
-            for lab in labels:
-
-                lab = torch.tensor(lab, device=vis_cls_feat.device)
-
-                # case 1: class id [N]
-                if lab.ndim == 1:
-                    cls = lab[0].long()
-
-                # case 2: one-hot [N,C]
-                elif lab.ndim == 2:
-                    cls = torch.argmax(lab[0]).long()
-
-                else:
-                    cls = torch.tensor(0, device=vis_cls_feat.device)
-
-                classes.append(cls)
-
-            classes = torch.stack(classes)
-            text_prematched = text_feat[classes]   # (B, D)
-
-        # ---------------------------------------------------
-        # INFERENCE MODE → cosine similarity matching
-        # ---------------------------------------------------
-        else:
-            text_norm = text_feat / text_feat.norm(dim=-1, keepdim=True)
-            vis_norm = vis_cls_feat / vis_cls_feat.norm(dim=-1, keepdim=True)
-
-            pred_cls = torch.argmax(vis_norm @ text_norm.t(), dim=-1)
-            text_prematched = text_feat[pred_cls]
-
-        return text_prematched
-
-
-
-    def get_prematched_token_text(self, text_token_feats, text_features, pretrained_cls, labels=None):
-        """ text_token_feats: (K, L, D)
-            text_features: (K, D)
-            pretrained_cls: (B, D)
-        """
-        text_feat = torch.stack(text_features, dim=0).mean(dim=1) if isinstance(text_features, list) else text_features  # (K, D)
-        if labels is not None:
-            classes = torch.tensor([int(torch.tensor(onehots).argmax(dim=1)[0]) for onehots in labels], device=pretrained_cls.device).long()  # (B,)
-        else:
-            text_feat = text_feat / text_feat.norm(dim=-1, keepdim=True)
-            vis_feat = pretrained_cls / pretrained_cls.norm(dim=-1, keepdim=True)
-            classes = (vis_feat @ text_feat.t()).argmax(dim=-1)  # (B,)
-        
-        text_prematched = text_token_feats['feat'][classes]  # (B, L, D)
-        token_mask = text_token_feats['mask'][classes]  # (B, L)
-
-        return text_prematched, token_mask
-    
-
-    def _expand_mask(self, token_mask, num_heads, tgt_len, dtype=torch.float32):
-        """ token_mask: (B, L) where 1 indicates attend, and 0 indicates NOT attend
-            return: (B * Nh, N, L) where N is the number of queries
-        """
-        bsz, src_len = token_mask.size()  # (B, L)
-        expanded_mask = token_mask[:, None, None, :].expand(bsz, num_heads, tgt_len, src_len).to(dtype)
-        inverted_mask = 1.0 - expanded_mask
-        inverted_mask = inverted_mask.masked_fill(inverted_mask.bool(), torch.finfo(dtype).min)
-        return inverted_mask.view(-1, tgt_len, src_len)
 
 
     def forward(
@@ -720,12 +550,12 @@ class STMDecoder(nn.Module):
         text_token_feats=None
     ):
 
-        # optional conditioning (kept for compatibility)
+        # Optional conditioning
         cond = None
         if self.cond_cls:
             cond = cls_feat if self.cond_type == 'visual' else self.get_prematched_text(cls_feat, text_features, labels)
 
-        # initialize queries
+        # Initialize queries
         proposal_boxes, spatial_queries, temporal_queries = self._decode_init_queries(
             whwh, cond=cond, extras=extras
         )
@@ -735,7 +565,7 @@ class STMDecoder(nn.Module):
 
         B, N, _ = spatial_queries.size()
 
-        # decoder refinement stages
+        # Decoder stages
         for decoder_stage in self.decoder_stages:
 
             cls_logits, _, delta_xyzr, spatial_queries, temporal_queries = decoder_stage(
@@ -757,26 +587,18 @@ class STMDecoder(nn.Module):
             inter_class_logits.append(cls_logits)
             inter_pred_bboxes.append(pred_boxes)
 
-        # ==========================================================
-        # INFERENCE MODE 
-        # ========================================================= =
+        # Inference mode
         if not self.training:
-
-            logits = inter_class_logits[-1]      # [B, Q, C+1]
-            boxes  = inter_pred_bboxes[-1]       # [B, Q, 4]
+            logits = inter_class_logits[-1]
+            boxes  = inter_pred_bboxes[-1]
 
             probs = logits.softmax(-1)
-
-            # remove "no-object" class (last class)
             scores, labels = probs[..., :-1].max(-1)
 
             results = []
             for i in range(B):
-
-                # filter low confidence predictions
                 keep = torch.where(scores[i] > self.score_threshold)[0]
 
-                # fallback: keep top-10 if nothing detected
                 if keep.numel() == 0:
                     k = min(10, scores.size(1))
                     keep = torch.topk(scores[i], k=k).indices
@@ -785,7 +607,6 @@ class STMDecoder(nn.Module):
                 cur_scores = scores[i][keep]
                 cur_labels = labels[i][keep]
 
-                # normalize boxes to 0-1
                 h, w = whwh[i][1], whwh[i][0]
                 cur_boxes = cur_boxes.clone()
                 cur_boxes[:, 0::2] /= w
@@ -799,10 +620,7 @@ class STMDecoder(nn.Module):
 
             return results
 
-
-        # ==========================================================
-        # TRAINING MODE
-        # ==========================================================
+        # Training mode
         targets = self.make_targets(gt_boxes, whwh, labels)
 
         output = {
@@ -812,13 +630,85 @@ class STMDecoder(nn.Module):
 
         losses = self.criterion(output, targets)
 
-        # apply weights
         for k in losses.keys():
             if k in self.weight_dict:
                losses[k] *= self.weight_dict[k]
 
         return losses
-    
-    def build_stm_decoder(cfg):
-        return STMDecoder(cfg)
 
+    def make_targets(self, gt_boxes, whwh, labels):
+        """Universal targets builder for image detection."""
+        targets = []
+        for boxes_img, frame_size, label in zip(gt_boxes, whwh, labels):
+            target = {}
+            boxes = torch.tensor(boxes_img, dtype=torch.float32, device=self.device)
+            target["boxes_xyxy"] = boxes
+
+            if label is None or len(label) == 0:
+                class_ids = torch.zeros(len(boxes), dtype=torch.int64, device=self.device)
+            else:
+                label = torch.tensor(label, device=self.device)
+                if label.ndim == 1:
+                    class_ids = label.long()
+                else:
+                    class_ids = torch.argmax(label, dim=1).long()
+
+            target["labels"] = class_ids
+            target["image_size_xyxy"] = frame_size.to(self.device)
+            target["image_size_xyxy_tgt"] = frame_size.unsqueeze(0).repeat(len(boxes), 1).to(self.device)
+
+            if not self.use_pretrained_action:
+                if label.ndim == 2:
+                    target["action_labels"] = label.float()
+                else:
+                    num_classes = self.criterion.num_classes
+                    target["action_labels"] = torch.nn.functional.one_hot(
+                        class_ids, num_classes=num_classes
+                    ).float()
+
+            targets.append(target)
+
+        return targets
+
+    def get_prematched_text(self, vis_cls_feat, text_features, labels=None):
+        if isinstance(text_features, list):
+            text_feat = torch.stack(text_features, dim=0).mean(dim=1)
+        else:
+            text_feat = text_features
+
+        text_feat = text_feat.to(vis_cls_feat.device)
+
+        if labels is not None and len(labels) > 0:
+            classes = []
+            for lab in labels:
+                lab = torch.tensor(lab, device=vis_cls_feat.device)
+                if lab.ndim == 1:
+                    cls = lab[0].long()
+                elif lab.ndim == 2:
+                    cls = torch.argmax(lab[0]).long()
+                else:
+                    cls = torch.tensor(0, device=vis_cls_feat.device)
+                classes.append(cls)
+            classes = torch.stack(classes)
+            text_prematched = text_feat[classes]
+        else:
+            text_norm = text_feat / text_feat.norm(dim=-1, keepdim=True)
+            vis_norm = vis_cls_feat / vis_cls_feat.norm(dim=-1, keepdim=True)
+            pred_cls = torch.argmax(vis_norm @ text_norm.t(), dim=-1)
+            text_prematched = text_feat[pred_cls]
+
+        return text_prematched
+
+    
+def build_stm_decoder(cfg, image_mode=True):
+    """
+    Build STM Decoder for image multimodal.
+    
+    Args:
+        cfg: Configuration
+        image_mode: If True, build for image mode (no temporal processing)
+    
+    Returns:
+        STMDecoder instance
+    """
+    return STMDecoder(cfg, image_mode=image_mode)

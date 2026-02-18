@@ -911,16 +911,7 @@ def contrast_list(var, images):
 
 
 def color_jitter(image, img_brightness=0, img_contrast=0, img_saturation=0):
-    """
-    Perform color jitter on the given image.
-    Args:
-        image (array): image to perform color jitter.
-        img_brightness (float): jitter ratio for brightness.
-        img_contrast (float): jitter ratio for contrast.
-        img_saturation (float): jitter ratio for saturation.
-    Returns:
-        image (array): the jittered image.
-    """
+    """Perform color jitter on one CHW image tensor (numpy array)."""
     jitter = []
     if img_brightness != 0:
         jitter.append("brightness")
@@ -934,3 +925,122 @@ def color_jitter(image, img_brightness=0, img_contrast=0, img_saturation=0):
         for idx in range(0, len(jitter)):
             if jitter[order[idx]] == "brightness":
                 image = brightness(img_brightness, image)
+            elif jitter[order[idx]] == "contrast":
+                image = contrast(img_contrast, image)
+            elif jitter[order[idx]] == "saturation":
+                image = saturation(img_saturation, image)
+    return image
+
+
+class PreprocessWithBoxes:
+    """Preprocess image(s) and optional boxes for image detection training/inference."""
+
+    def __init__(self, split, data_cfg, image_cfg):
+        self.split = str(split).lower()
+        self.is_train = self.split == "train"
+
+        self.mean = np.asarray(getattr(data_cfg, "MEAN", [0.45, 0.45, 0.45]), dtype=np.float32).reshape(1, 1, 3)
+        self.std = np.asarray(getattr(data_cfg, "STD", [0.225, 0.225, 0.225]), dtype=np.float32).reshape(1, 1, 3)
+
+        self.train_min_scales = list(getattr(data_cfg, "TRAIN_MIN_SCALES", [256]))
+        self.train_max_scale = int(getattr(data_cfg, "TRAIN_MAX_SCALE", 1333))
+        self.test_min_scales = list(getattr(data_cfg, "TEST_MIN_SCALES", [256]))
+        self.test_max_scale = int(getattr(data_cfg, "TEST_MAX_SCALE", 1333))
+        self.fix_size = list(getattr(data_cfg, "FIX_SIZE", []))
+
+        self.use_bgr = bool(getattr(image_cfg, "BGR", False))
+        self.test_force_flip = bool(getattr(image_cfg, "TEST_FORCE_FLIP", False))
+        self.flip_prob = 0.5
+
+    def _choose_target_size(self, height, width):
+        if len(self.fix_size) >= 2:
+            target_h = max(1, int(self.fix_size[0]))
+            target_w = max(1, int(self.fix_size[1]))
+            return target_h, target_w
+
+        if self.is_train:
+            min_scales = self.train_min_scales
+            max_scale = self.train_max_scale
+            short_side = int(np.random.choice(min_scales)) if len(min_scales) > 1 else int(min_scales[0])
+        else:
+            min_scales = self.test_min_scales
+            max_scale = self.test_max_scale
+            short_side = int(min_scales[0])
+
+        min_hw = float(min(height, width))
+        max_hw = float(max(height, width))
+        scale = short_side / max(min_hw, 1.0)
+        if max_hw * scale > max_scale:
+            scale = max_scale / max(max_hw, 1.0)
+
+        target_h = max(1, int(round(height * scale)))
+        target_w = max(1, int(round(width * scale)))
+        return target_h, target_w
+
+    def _prepare_boxes(self, boxes, src_h, src_w, dst_h, dst_w):
+        if boxes is None:
+            return None
+
+        boxes_np = np.asarray(boxes, dtype=np.float32).reshape(-1, 4).copy()
+        if boxes_np.size == 0:
+            return boxes_np
+
+        # Accept either normalized [0, 1] boxes or absolute pixel boxes.
+        if float(np.max(np.abs(boxes_np))) <= 1.5:
+            boxes_np[:, [0, 2]] *= float(src_w)
+            boxes_np[:, [1, 3]] *= float(src_h)
+
+        boxes_np[:, [0, 2]] *= float(dst_w) / float(max(src_w, 1))
+        boxes_np[:, [1, 3]] *= float(dst_h) / float(max(src_h, 1))
+
+        boxes_np = clip_boxes_to_image(boxes_np, dst_h, dst_w)
+        keep = (boxes_np[:, 2] > boxes_np[:, 0]) & (boxes_np[:, 3] > boxes_np[:, 1])
+        return boxes_np[keep]
+
+    def _flip_boxes(self, boxes, width):
+        if boxes is None or boxes.size == 0:
+            return boxes
+        flipped = boxes.copy()
+        flipped[:, 0] = width - 1.0 - boxes[:, 2]
+        flipped[:, 2] = width - 1.0 - boxes[:, 0]
+        return flipped
+
+    def _to_tensor(self, images):
+        chw_images = []
+        for image in images:
+            if not self.use_bgr:
+                image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            image = image.astype(np.float32) / 255.0
+            image = (image - self.mean) / self.std
+            chw_images.append(np.transpose(image, (2, 0, 1)))
+
+        # C, T, H, W
+        stacked = np.stack(chw_images, axis=1).astype(np.float32)
+        return torch.from_numpy(stacked)
+
+    def process(self, images, boxes=None):
+        if images is None or len(images) == 0:
+            raise ValueError("PreprocessWithBoxes.process expects a non-empty image list.")
+
+        src_h, src_w = images[0].shape[:2]
+        dst_h, dst_w = self._choose_target_size(src_h, src_w)
+
+        resized = [
+            cv2.resize(image, (dst_w, dst_h), interpolation=cv2.INTER_LINEAR).astype(np.float32)
+            for image in images
+        ]
+
+        boxes_out = self._prepare_boxes(boxes, src_h, src_w, dst_h, dst_w)
+
+        do_flip = False
+        if self.is_train:
+            do_flip = np.random.rand() < self.flip_prob
+        elif self.test_force_flip:
+            do_flip = True
+
+        if do_flip:
+            resized = [cv2.flip(image, 1) for image in resized]
+            boxes_out = self._flip_boxes(boxes_out, dst_w)
+
+        tensor = self._to_tensor(resized)
+        return tensor, boxes_out

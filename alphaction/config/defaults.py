@@ -14,6 +14,9 @@ _C.DATA.PATH_TO_DATA_DIR = ""
 # Input mode - now only supports "image" (video support removed)
 _C.DATA.INPUT_TYPE = "image"
 
+# Image mode flag - set to True for image-only multimodal (no temporal processing)
+_C.DATA.IMAGE_MODE = True
+
 # Relative frame/image directory under PATH_TO_DATA_DIR.
 _C.DATA.FRAME_DIR = ""
 
@@ -126,7 +129,7 @@ _C.MODEL.USE_ROI_FEAT = False
 _C.MODEL.BACKBONE = CN()
 # The backbone conv body to use
 # Available backbone conv-body should be registered in modeling.backbone.backbone.py
-_C.MODEL.BACKBONE.CONV_BODY = "Slowfast-Resnet50"
+_C.MODEL.BACKBONE.CONV_BODY = "ImageResNet-50"
 _C.MODEL.BACKBONE.PATHWAYS = 1
 _C.MODEL.BACKBONE.FROZEN_BN = False
 _C.MODEL.BACKBONE.FREEZE_PRETRAINED_VISUAL = True

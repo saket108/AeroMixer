@@ -146,7 +146,8 @@ def make_optimizer(cfg, model):
         # only running_mean and var frozen
         if frozn_bn:
             for m in model.backbone.modules():
-                if isinstance(m, nn.BatchNorm3d):
+                # Support both BatchNorm2d (image) and BatchNorm3d (video) for backward compatibility
+                if isinstance(m, (nn.BatchNorm2d, nn.BatchNorm3d)):
                     m.eval()
         for name, p in model.named_parameters():
             if ("backbone" in name) and ('bn' in name):

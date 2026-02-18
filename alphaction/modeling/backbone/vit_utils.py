@@ -1,3 +1,10 @@
+# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
+
+"""
+Vision Transformer utilities for image + text multimodal models.
+Image-only version - no video concepts.
+"""
+
 from typing import Tuple
 import torch
 import torch.nn as nn
@@ -52,8 +59,6 @@ class Mlp(nn.Module):
     def forward(self, x):
         x = self.fc1(x)
         x = self.act(x)
-        # x = self.drop(x)
-        # commit this for the orignal BERT implement
         x = self.fc2(x)
         x = self.drop(x)
         return x
@@ -61,8 +66,7 @@ class Mlp(nn.Module):
 
 class Attention(nn.Module):
     def __init__(
-            self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0.,
-            proj_drop=0., attn_head_dim=None):
+            self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0., attn_head_dim=None):
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
@@ -88,10 +92,9 @@ class Attention(nn.Module):
         qkv_bias = None
         if self.q_bias is not None:
             qkv_bias = torch.cat((self.q_bias, torch.zeros_like(self.v_bias, requires_grad=False), self.v_bias))
-        # qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         qkv = F.linear(input=x, weight=self.qkv.weight, bias=qkv_bias)
         qkv = qkv.reshape(B, N, 3, self.num_heads, -1).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
+        q, k, v = qkv[0], qkv[1], qkv[2]
 
         q = q * self.scale
         attn = (q @ k.transpose(-2, -1))
@@ -106,6 +109,7 @@ class Attention(nn.Module):
 
 
 class Block(nn.Module):
+    """Transformer block for image processing."""
 
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
                  drop_path=0., init_values=None, act_layer=nn.GELU, norm_layer=nn.LayerNorm,
@@ -115,7 +119,6 @@ class Block(nn.Module):
         self.attn = Attention(
             dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale,
             attn_drop=attn_drop, proj_drop=drop, attn_head_dim=attn_head_dim)
-        # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
@@ -141,12 +144,6 @@ class Block(nn.Module):
             return self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
 
     def forward(self, x):
-        # if self.gamma_1 is None:
-        #     x = x + self.drop_path(self.attn(self.norm1(x)))
-        #     x = x + self.drop_path(self.mlp(self.norm2(x)))
-        # else:
-        #     x = x + self.drop_path(self.gamma_1 * self.attn(self.norm1(x)))
-        #     x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
         if self.use_checkpoint:
             x = x + checkpoint.checkpoint(self.forward_part1, x)
         else:
@@ -160,74 +157,78 @@ class Block(nn.Module):
 
 
 class PatchEmbed(nn.Module):
-    """ Image to Patch Embedding
+    """
+    2D Patch Embedding for image tokens.
+    Uses 2D convolution instead of 3D for image processing.
     """
 
-    def __init__(self, img_size=224, patch_size=16, in_chans=3, embed_dim=768, num_frames=16, tubelet_size=2):
+    def __init__(self, img_size=224, patch_size=16, in_chans=3, embed_dim=768):
         super().__init__()
         img_size = to_2tuple(img_size)
         patch_size = to_2tuple(patch_size)
-        self.tubelet_size = int(tubelet_size)
-        num_patches = (img_size[1] // patch_size[1]) * (img_size[0] // patch_size[0]) * (
-                    num_frames // self.tubelet_size)
+        num_patches = (img_size[1] // patch_size[1]) * (img_size[0] // patch_size[0])
         self.img_size = img_size
         self.patch_size = patch_size
         self.num_patches = num_patches
-        self.proj = nn.Conv3d(in_channels=in_chans, out_channels=embed_dim,
-                              kernel_size=(self.tubelet_size, patch_size[0], patch_size[1]),
-                              stride=(self.tubelet_size, patch_size[0], patch_size[1]))
+        # Use 2D convolution for images
+        self.proj = nn.Conv2d(
+            in_channels=in_chans, 
+            out_channels=embed_dim,
+            kernel_size=(patch_size[0], patch_size[1]),
+            stride=(patch_size[0], patch_size[1])
+        )
 
-    def forward(self, x, **kwargs):
-        # B, C, T, H, W = x.shape
-        # FIXME look at relaxing size constraints
-        # assert H == self.img_size[0] and W == self.img_size[1], \
-        #     f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
-        # x = self.proj(x).flatten(2).transpose(1, 2)
-        x = self.proj(x)
+    def forward(self, x, keep_spatial=False):
+        # x: (B, C, H, W)
+        x = self.proj(x)  # (B, embed_dim, H/patch_size, W/patch_size)
+        if keep_spatial:
+            return x, x.shape
+        # B, C, H, W -> B, HW, C
+        x = x.flatten(2).transpose(1, 2)
         return x
 
 
 # sin-cos position encoding
-# https://github.com/jadore801120/attention-is-all-you-need-pytorch/blob/master/transformer/Models.py#L31
 def get_sinusoid_encoding_table(n_position, d_hid):
-    ''' Sinusoid position encoding table '''
-
-    # TODO: make it with torch instead of numpy
+    """Sinusoid position encoding table."""
     def get_position_angle_vec(position):
         return [position / np.power(10000, 2 * (hid_j // 2) / d_hid) for hid_j in range(d_hid)]
 
     sinusoid_table = np.array([get_position_angle_vec(pos_i) for pos_i in range(n_position)])
-    sinusoid_table[:, 0::2] = np.sin(sinusoid_table[:, 0::2])  # dim 2i
-    sinusoid_table[:, 1::2] = np.cos(sinusoid_table[:, 1::2])  # dim 2i+1
+    sinusoid_table[:, 0::2] = np.sin(sinusoid_table[:, 0::2])
+    sinusoid_table[:, 1::2] = np.cos(sinusoid_table[:, 1::2])
 
     return torch.FloatTensor(sinusoid_table).unsqueeze(0)
 
 
-class PretrainVisionTransformerEncoder(nn.Module):
-    """ Vision Transformer with support for patch or hybrid CNN input stage
+class ImageVisionTransformerEncoder(nn.Module):
+    """
+    Vision Transformer Encoder for images (not video).
     """
 
     def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=0, embed_dim=768, depth=12,
                  num_heads=12, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop_rate=0., attn_drop_rate=0.,
-                 drop_path_rate=0., norm_layer=nn.LayerNorm, init_values=None, tubelet_size=2,
+                 drop_path_rate=0., norm_layer=nn.LayerNorm, init_values=None,
                  use_learnable_pos_emb=False, use_checkpoint=False):
         super().__init__()
         self.num_classes = num_classes
-        self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
+        self.num_features = self.embed_dim = embed_dim
         self.use_checkpoint = use_checkpoint
 
         self.patch_embed = PatchEmbed(
-            img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim, tubelet_size=tubelet_size)
+            img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim)
         num_patches = self.patch_embed.num_patches
 
-        # TODO: Add the cls token
         if use_learnable_pos_emb:
             self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
+            self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         else:
-            # sine-cosine positional embeddings
             self.pos_embed = get_sinusoid_encoding_table(num_patches, embed_dim)
+            self.cls_token = None
 
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
+        self.pos_drop = nn.Dropout(p=drop_rate)
+
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
         self.blocks = nn.ModuleList([
             Block(
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
@@ -235,13 +236,14 @@ class PretrainVisionTransformerEncoder(nn.Module):
                 init_values=init_values)
             for i in range(depth)])
         self.norm = norm_layer(embed_dim)
-        self.head = nn.Linear(embed_dim, num_classes) if num_classes > 0 else nn.Identity()  # 未使用
+        self.head = nn.Linear(embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
-        # for online interpolate
-        self.grid_size = [img_size // patch_size, img_size // patch_size]  # [14,14]
+        self.grid_size = [img_size // patch_size, img_size // patch_size]
 
         if use_learnable_pos_emb:
             trunc_normal_(self.pos_embed, std=.02)
+            if self.cls_token is not None:
+                trunc_normal_(self.cls_token, std=.02)
 
         self.apply(self._init_weights)
 
@@ -268,60 +270,52 @@ class PretrainVisionTransformerEncoder(nn.Module):
         self.num_classes = num_classes
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
-    def forward_features(self, x, mask):
-        _, _, T, _, _ = x.shape
-        x = self.patch_embed(x)  # 16x224x224->8x14x14
-        ws = x.shape[2:]  # t,h,w
-        x = x.flatten(2).transpose(1, 2)  # b,n,c
-        B, _, C = x.shape
-        # pos_embed=[8x14x14,384]->sin->[1,8x14x14,384]
-        pos_embed = self.pos_embed
-        # print('before online interpolate={}'.format(pos_embed.shape))
-        if self.pos_embed.shape[1] != ws[0] * ws[1] * ws[2]:  # 预测阶段插值
-            # pos_embed=[1 8*14*14 384]->[1 8*16*29 384]
-            pos_embed = pos_embed.reshape(ws[0], -1, C)
-            pos_embed = interpolate_pos_embed_online(
-                pos_embed, self.grid_size, [ws[1], ws[2]], 0).reshape(1, -1, C)
+    def forward_features(self, x):
+        # x: (B, C, H, W)
+        x = self.patch_embed(x)  # (B, num_patches, embed_dim)
+        
+        B, N, C = x.shape
+        
+        # Add cls token if learnable
+        if self.cls_token is not None:
+            cls_token = self.cls_token.expand(B, -1, -1)
+            x = torch.cat([cls_token, x], dim=1)
+        
+        # Add positional embedding
+        x = x + self.pos_embed[:, :N + (1 if self.cls_token is not None else 0), :].type_as(x)
+        x = self.pos_drop(x)
 
-        x = x + pos_embed.type_as(x).to(x.device).clone().detach()
-
-        x_vis = x[~mask].reshape(B, -1, C)  # ~mask means visible
         for blk in self.blocks:
-            # x_vis = blk(x_vis)
             if self.use_checkpoint:
-                x_vis = checkpoint.checkpoint(blk, x_vis)
+                x = checkpoint.checkpoint(blk, x)
             else:
-                x_vis = blk(x_vis)
+                x = blk(x)
 
-        x_vis = self.norm(x_vis)  # [B,wsx10%,768]
-        return x_vis, ws
+        x = self.norm(x)
+        return x
 
-    def forward(self, x, mask):
-        x, ws = self.forward_features(x, mask)
-        x = self.head(x)  # Identity
-        return x, ws
+    def forward(self, x):
+        x = self.forward_features(x)
+        x = self.head(x)
+        return x
 
 
-class PretrainVisionTransformerDecoder(nn.Module):
-    """ Vision Transformer with support for patch or hybrid CNN input stage
+class ImageVisionTransformerDecoder(nn.Module):
+    """
+    Vision Transformer Decoder for images.
     """
 
     def __init__(self, patch_size=16, num_classes=0, embed_dim=768, depth=12,
                  num_heads=12, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop_rate=0., attn_drop_rate=0.,
-                 drop_path_rate=0., norm_layer=nn.LayerNorm, init_values=None, num_patches=196, tubelet_size=2,
-                 use_checkpoint=False,
-                 ):
+                 drop_path_rate=0., norm_layer=nn.LayerNorm, init_values=None, num_patches=196,
+                 use_checkpoint=False):
         super().__init__()
         self.num_classes = num_classes
-        # assert num_classes == 3 * tubelet_size * patch_size ** 2
-        assert num_classes == 0
-        # 这里的的num_classes指的是离开decoder时将token上采样到原图大小
-        # 因为我们的训练过程无复原，不需要分类层，将num_classes修改为0
-        self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
+        self.num_features = self.embed_dim = embed_dim
         self.patch_size = patch_size
         self.use_checkpoint = use_checkpoint
 
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
         self.blocks = nn.ModuleList([
             Block(
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
@@ -356,16 +350,15 @@ class PretrainVisionTransformerDecoder(nn.Module):
         self.num_classes = num_classes
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
-    def forward(self, x, return_token_num):
+    def forward(self, x, return_token_num=0):
         for blk in self.blocks:
-            # x = blk(x)
             if self.use_checkpoint:
                 x = checkpoint.checkpoint(blk, x)
             else:
                 x = blk(x)
 
         if return_token_num > 0:
-            x = self.head(self.norm(x[:, -return_token_num:]))  # only return the mask tokens predict pixels
+            x = self.head(self.norm(x[:, -return_token_num:]))
         else:
             x = self.head(self.norm(x))
         return x
@@ -379,7 +372,7 @@ def interpolate_pos_embed_online(
     embedding_size = pos_tokens.shape[-1]
     pos_tokens = pos_tokens.reshape(
         -1, orig_size[0], orig_size[1], embedding_size
-    ).permute(0, 3, 1, 2)  # 8, 768, 14, 14
+    ).permute(0, 3, 1, 2)
     pos_tokens = torch.nn.functional.interpolate(
         pos_tokens, size=new_size, mode="bicubic", align_corners=False,
     )
@@ -388,6 +381,6 @@ def interpolate_pos_embed_online(
     return new_pos_embed
 
 
-
-if __name__ == '__main__':
-    pass
+# Backward compatibility - keep old names as aliases
+VisionTransformerEncoder = ImageVisionTransformerEncoder
+VisionTransformerDecoder = ImageVisionTransformerDecoder

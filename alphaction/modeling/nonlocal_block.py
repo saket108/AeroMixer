@@ -1,12 +1,22 @@
+"""
+Non-local Block for Image Multimodal Models.
+Converted from 3D (video) to 2D (image) version.
+"""
+
 from __future__ import (absolute_import, division, print_function,
                         unicode_literals)
 
 import torch
 import torch.nn as nn
-from alphaction.layers import FrozenBatchNorm3d
+from alphaction.layers import FrozenBatchNorm2d
 
 
 class NLBlock(nn.Module):
+    """
+    Non-local Block for 2D image features.
+    Computes attention-based features for image + text multimodal models.
+    """
+    
     def __init__(self, dim_in, dim_out, dim_inner, nl_cfg, group=False):
         super(NLBlock, self).__init__()
 
@@ -21,21 +31,25 @@ class NLBlock(nn.Module):
         self.scale_value = dim_inner ** (-0.5)
         self.dim_inner = dim_inner
 
-        self.theta = nn.Conv3d(dim_in, dim_inner, 1, bias=bias)
+        # Converted from Conv3d to Conv2d for image
+        self.theta = nn.Conv2d(dim_in, dim_inner, 1, bias=bias)
         nn.init.normal_(self.theta.weight, std=init_std)
         if bias:
             nn.init.constant_(self.theta.bias, 0)
 
         if nl_cfg.USE_MAXPOOL:
-            self.maxpool = nn.MaxPool3d((1, pool_stride, pool_stride),
-                                        stride=(1, pool_stride, pool_stride))
+            # Converted from MaxPool3d to MaxPool2d for image
+            self.maxpool = nn.MaxPool2d((pool_stride, pool_stride),
+                                        stride=(pool_stride, pool_stride))
 
-        self.phi = nn.Conv3d(dim_in, dim_inner, 1, bias=bias)
+        # Converted from Conv3d to Conv2d for image
+        self.phi = nn.Conv2d(dim_in, dim_inner, 1, bias=bias)
         nn.init.normal_(self.phi.weight, std=init_std)
         if bias:
             nn.init.constant_(self.phi.bias, 0)
 
-        self.g = nn.Conv3d(dim_in, dim_inner, 1, bias=bias)
+        # Converted from Conv3d to Conv2d for image
+        self.g = nn.Conv2d(dim_in, dim_inner, 1, bias=bias)
         nn.init.normal_(self.g.weight, std=init_std)
         if bias:
             nn.init.constant_(self.g.bias, 0)
@@ -43,7 +57,8 @@ class NLBlock(nn.Module):
         if nl_cfg.USE_SOFTMAX:
             self.softmax = nn.Softmax(dim=2)
 
-        self.out = nn.Conv3d(dim_inner, dim_out, 1, bias=bias)
+        # Converted from Conv3d to Conv2d for image
+        self.out = nn.Conv2d(dim_inner, dim_out, 1, bias=bias)
         if nl_cfg.USE_ZERO_INIT_CONV:
             nn.init.constant_(self.out.weight, 0)
         else:
@@ -53,14 +68,17 @@ class NLBlock(nn.Module):
 
         if nl_cfg.USE_BN:
             if nl_cfg.FROZEN_BN:
-                self.bn = FrozenBatchNorm3d(dim_out, eps=nl_cfg.BN_EPSILON)
+                # Converted from FrozenBatchNorm3d to FrozenBatchNorm2d for image
+                self.bn = FrozenBatchNorm2d(dim_out, eps=nl_cfg.BN_EPSILON)
             else:
-                self.bn = nn.BatchNorm3d(dim_out, eps=nl_cfg.BN_EPSILON, momentum=nl_cfg.BN_MOMENTUM)
+                # Converted from BatchNorm3d to BatchNorm2d for image
+                self.bn = nn.BatchNorm2d(dim_out, eps=nl_cfg.BN_EPSILON, momentum=nl_cfg.BN_MOMENTUM)
             nn.init.constant_(self.bn.weight, nl_cfg.BN_INIT_GAMMA)
 
     def forward(self, x):
-        if x.dim() != 5:
-            raise ValueError('expected 4D or 5D input (got {}D input)'
+        # Updated for 4D input (B, C, H, W) instead of 5D (B, C, T, H, W)
+        if x.dim() != 4:
+            raise ValueError('expected 4D input (got {}D input)'
                              .format(x.dim()))
 
         if self.group:
@@ -85,6 +103,7 @@ class NLBlock(nn.Module):
 
         g = self.g(max_pool)
 
+        # Updated for 4D input: (B, C, H, W) -> (B, C, H*W)
         org_size = theta.size()
         mat_size = [batch_size, self.dim_inner, -1]
         theta = theta.view(*mat_size)
@@ -123,7 +142,8 @@ class NLBlock(nn.Module):
         weight_map = {}
         for name, m_child in self.named_children():
             if m_child.state_dict():
-                if isinstance(m_child, (nn.BatchNorm3d, FrozenBatchNorm3d)):
+                # Updated to handle BatchNorm2d for image
+                if isinstance(m_child, (nn.BatchNorm2d, FrozenBatchNorm2d)):
                     weight_map[name + '.weight'] = '{}_s'.format(name)
                     weight_map[name + '.running_mean'] = '{}_rm'.format(name)
                     weight_map[name + '.running_var'] = '{}_riv'.format(name)

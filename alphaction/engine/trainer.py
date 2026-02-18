@@ -8,8 +8,20 @@ from alphaction.utils.metric_logger import MetricLogger
 from alphaction.utils.comm import reduce_dict
 
 
+
+
+def _build_model_extras(metadata, labels):
+    extras = []
+    for meta, label in zip(metadata, labels):
+        item = {}
+        if isinstance(meta, dict):
+            item.update(meta)
+        item["labels"] = label
+        extras.append(item)
+    return extras
+
 # ------------------------------------------------------------
-# FAST UNIVERSAL TRAINER (IMAGE + VIDEO)
+# FAST IMAGE TRAINER
 # ------------------------------------------------------------
 def do_train(
         model,
@@ -29,7 +41,7 @@ def do_train(
         distributed,
         frozen_backbone_bn,
         output_folder,
-        metric='frame_ap'
+        metric='image_ap'
 ):
 
     logger = logging.getLogger("alphaction.trainer")
@@ -41,22 +53,7 @@ def do_train(
 
     model.train()
 
-    # --------------------------------------------------------
-    # Detect IMAGE vs VIDEO dataset
-    # --------------------------------------------------------
-    dataset = data_loader.dataset
-    is_image_dataset = getattr(dataset.cfg.DATA, "INPUT_TYPE", "video") == "image"
-
-    if is_image_dataset:
-        logger.info("🔥 Fast Image Training Mode Enabled")
-    else:
-        logger.info("🎬 Video Training Mode Enabled")
-
-    # freeze BN only for video
-    if frozen_backbone_bn and not is_image_dataset:
-        for m in model.modules():
-            if isinstance(m, nn.BatchNorm3d):
-                m.eval()
+    logger.info("🔥 Image Training Mode Enabled")
 
     start_training_time = time.time()
     end = time.time()
@@ -80,7 +77,8 @@ def do_train(
         # ----------------------------------------------------
         # Forward
         # ----------------------------------------------------
-        loss_dict = model(primary_inputs, secondary_inputs, whwh, boxes, labels, {})
+        extras = _build_model_extras(metadata, labels)
+        loss_dict = model(primary_inputs, secondary_inputs, whwh, boxes, labels, extras)
         losses = sum(loss_dict.values())
 
         # ----------------------------------------------------
