@@ -71,8 +71,8 @@ class CLIPVisualEncoder(nn.Module):
         x = x.permute(1, 0, 2).contiguous()  # NLD -> LND
         # x = self.transformer(x)
         for blk in self.transformer.resblocks:
-            if self.use_checkpoint:
-                x = checkpoint.checkpoint(blk, x)
+            if self.use_checkpoint and self.training and torch.is_grad_enabled() and x.requires_grad:
+                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
             else:
                 x = blk(x)
         xseq = x.permute(1, 0, 2).contiguous()  # LND -> NLD=(B*16, 18*?+1, D)

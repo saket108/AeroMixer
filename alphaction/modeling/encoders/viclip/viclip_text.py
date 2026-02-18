@@ -70,11 +70,15 @@ class Transformer(nn.Module):
         self.checkpoint_num = checkpoint_num
 
     def forward(self, x: torch.Tensor):
-        if self.checkpoint_num > 0:
+        if self.checkpoint_num > 0 and self.training and torch.is_grad_enabled() and x.requires_grad:
             segments = min(self.checkpoint_num, len(self.resblocks))
-            return checkpoint.checkpoint_sequential(self.resblocks, segments, x)
-        else:
-            return self.resblocks(x)
+            return checkpoint.checkpoint_sequential(
+                self.resblocks,
+                segments,
+                x,
+                use_reentrant=False,
+            )
+        return self.resblocks(x)
 
 
 class CLIP_TEXT(nn.Module):

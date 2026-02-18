@@ -53,7 +53,7 @@ def do_train(
 
     model.train()
 
-    logger.info("🔥 Image Training Mode Enabled")
+    logger.info("Image Training Mode Enabled")
 
     start_training_time = time.time()
     end = time.time()

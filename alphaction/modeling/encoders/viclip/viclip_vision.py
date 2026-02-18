@@ -60,9 +60,10 @@ class Transformer(nn.Module):
         self.checkpoint_num = checkpoint_num
 
     def forward(self, x):
+        use_ckpt = self.training and torch.is_grad_enabled() and x.requires_grad
         for idx, blk in enumerate(self.resblocks):
-            if idx < self.checkpoint_num:
-                x = checkpoint.checkpoint(blk, x)
+            if idx < self.checkpoint_num and use_ckpt:
+                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
             else:
                 x = blk(x)
         return x

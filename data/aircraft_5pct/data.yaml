@@ -1,0 +1,9 @@
+
+path: /content/frozen_dataset
+
+train: images/train
+val: images/val
+test: images/test
+
+nc: 6
+names: ['Crack','Dent','Scratch','Corrosion','Missing_Fastener','Paint_Damage']

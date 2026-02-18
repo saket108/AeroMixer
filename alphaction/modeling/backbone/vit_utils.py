@@ -144,13 +144,14 @@ class Block(nn.Module):
             return self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
 
     def forward(self, x):
-        if self.use_checkpoint:
-            x = x + checkpoint.checkpoint(self.forward_part1, x)
+        use_ckpt = self.use_checkpoint and self.training and torch.is_grad_enabled() and x.requires_grad
+        if use_ckpt:
+            x = x + checkpoint.checkpoint(self.forward_part1, x, use_reentrant=False)
         else:
             x = x + self.forward_part1(x)
 
-        if self.use_checkpoint:
-            x = x + checkpoint.checkpoint(self.forward_part2, x)
+        if use_ckpt:
+            x = x + checkpoint.checkpoint(self.forward_part2, x, use_reentrant=False)
         else:
             x = x + self.forward_part2(x)
         return x
@@ -286,8 +287,8 @@ class ImageVisionTransformerEncoder(nn.Module):
         x = self.pos_drop(x)
 
         for blk in self.blocks:
-            if self.use_checkpoint:
-                x = checkpoint.checkpoint(blk, x)
+            if self.use_checkpoint and self.training and torch.is_grad_enabled() and x.requires_grad:
+                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
             else:
                 x = blk(x)
 
@@ -352,8 +353,8 @@ class ImageVisionTransformerDecoder(nn.Module):
 
     def forward(self, x, return_token_num=0):
         for blk in self.blocks:
-            if self.use_checkpoint:
-                x = checkpoint.checkpoint(blk, x)
+            if self.use_checkpoint and self.training and torch.is_grad_enabled() and x.requires_grad:
+                x = checkpoint.checkpoint(blk, x, use_reentrant=False)
             else:
                 x = blk(x)
 

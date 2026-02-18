@@ -134,7 +134,14 @@ class Checkpointer(object):
             f.write(last_filename)
 
     def _load_file(self, f):
-        return torch.load(f, map_location=torch.device("cpu"))
+        map_location = torch.device("cpu")
+        # PyTorch >=2.6 defaults to weights_only=True, which breaks loading
+        # trainer checkpoints that store custom objects (e.g., MemoryPool).
+        try:
+            return torch.load(f, map_location=map_location, weights_only=False)
+        except TypeError:
+            # Older PyTorch versions do not expose weights_only.
+            return torch.load(f, map_location=map_location)
 
     def _load_model(self, checkpoint, no_head):
         load_state_dict(self.model, checkpoint.pop("model"), no_head, excluded=self.excluded_layers)

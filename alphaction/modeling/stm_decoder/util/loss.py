@@ -7,12 +7,21 @@ from .box_ops import generalized_box_iou
 
 
 # ---------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------
+def _get_target_boxes(target):
+    if "boxes_xyxy" in target:
+        return target["boxes_xyxy"]
+    return target["boxes"]
+
+
+# ---------------------------------------------------------
 # HUNGARIAN MATCHER (DETR STYLE)
 # ---------------------------------------------------------
 
 class HungarianMatcher(nn.Module):
 
-    def __init__(self, cost_class=1, cost_bbox=5, cost_giou=2):
+    def __init__(self, cfg=None, cost_class=1, cost_bbox=5, cost_giou=2, **kwargs):
         super().__init__()
         self.cost_class = cost_class
         self.cost_bbox = cost_bbox
@@ -26,23 +35,35 @@ class HungarianMatcher(nn.Module):
         out_prob = outputs["pred_logits"].flatten(0, 1).softmax(-1)
         out_bbox = outputs["pred_boxes"].flatten(0, 1)
 
-        tgt_ids = torch.cat([v["labels"] for v in targets])
-        tgt_bbox = torch.cat([v["boxes"] for v in targets])
+        tgt_ids_list = [v["labels"] for v in targets]
+        tgt_box_list = [_get_target_boxes(v) for v in targets]
+
+        tgt_ids = torch.cat(tgt_ids_list, dim=0)
+        tgt_bbox = torch.cat(tgt_box_list, dim=0)
+
+        if tgt_bbox.numel() == 0:
+            return [
+                (
+                    torch.empty(0, dtype=torch.int64),
+                    torch.empty(0, dtype=torch.int64),
+                )
+                for _ in range(bs)
+            ]
 
         cost_class = -out_prob[:, tgt_ids]
-
         cost_bbox = torch.cdist(out_bbox, tgt_bbox, p=1)
-
         cost_giou = -generalized_box_iou(out_bbox, tgt_bbox)
 
         C = self.cost_class * cost_class + self.cost_bbox * cost_bbox + self.cost_giou * cost_giou
         C = C.view(bs, num_queries, -1).cpu()
 
-        sizes = [len(v["boxes"]) for v in targets]
+        sizes = [len(boxes) for boxes in tgt_box_list]
         indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
 
-        return [(torch.as_tensor(i, dtype=torch.int64),
-                 torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
+        return [
+            (torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64))
+            for i, j in indices
+        ]
 
 
 # ---------------------------------------------------------
@@ -51,11 +72,12 @@ class HungarianMatcher(nn.Module):
 
 class SetCriterion(nn.Module):
 
-    def __init__(self, num_classes, matcher, eos_coef=0.1):
+    def __init__(self, cfg=None, num_classes=1, matcher=None, eos_coef=0.1, losses=None, use_focal=False, **kwargs):
         super().__init__()
 
         self.num_classes = num_classes
         self.matcher = matcher
+        self.losses = losses if losses is not None else ["labels", "boxes"]
 
         empty_weight = torch.ones(self.num_classes + 1)
         empty_weight[-1] = eos_coef
@@ -70,10 +92,12 @@ class SetCriterion(nn.Module):
         idx = self._get_src_permutation_idx(indices)
         target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
 
-        target_classes = torch.full(src_logits.shape[:2],
-                                    self.num_classes,
-                                    dtype=torch.int64,
-                                    device=src_logits.device)
+        target_classes = torch.full(
+            src_logits.shape[:2],
+            self.num_classes,
+            dtype=torch.int64,
+            device=src_logits.device,
+        )
 
         target_classes[idx] = target_classes_o
 
@@ -87,7 +111,14 @@ class SetCriterion(nn.Module):
         idx = self._get_src_permutation_idx(indices)
 
         src_boxes = outputs["pred_boxes"][idx]
-        target_boxes = torch.cat([t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0)
+        target_boxes = torch.cat([_get_target_boxes(t)[i] for t, (_, i) in zip(targets, indices)], dim=0)
+
+        if src_boxes.numel() == 0 or target_boxes.numel() == 0:
+            zero = outputs["pred_boxes"].sum() * 0.0
+            return {
+                "loss_bbox": zero,
+                "loss_giou": zero,
+            }
 
         loss_bbox = F.l1_loss(src_boxes, target_boxes, reduction="none")
         loss_bbox = loss_bbox.sum() / num_boxes
@@ -97,7 +128,7 @@ class SetCriterion(nn.Module):
 
         return {
             "loss_bbox": loss_bbox,
-            "loss_giou": loss_giou
+            "loss_giou": loss_giou,
         }
 
     # ---------------- UTILS ----------------
@@ -111,14 +142,18 @@ class SetCriterion(nn.Module):
 
     def forward(self, outputs, targets):
 
-        indices = self.matcher(outputs, targets)
+        outputs_wo_aux = {k: v for k, v in outputs.items() if k != "aux_outputs"}
+        indices = self.matcher(outputs_wo_aux, targets)
 
         num_boxes = sum(len(t["labels"]) for t in targets)
-        num_boxes = torch.as_tensor([num_boxes], dtype=torch.float, device=outputs["pred_logits"].device)
+        num_boxes = torch.as_tensor([num_boxes], dtype=torch.float, device=outputs_wo_aux["pred_logits"].device)
         num_boxes = torch.clamp(num_boxes, min=1).item()
 
         losses = {}
-        losses.update(self.loss_labels(outputs, targets, indices, num_boxes))
-        losses.update(self.loss_boxes(outputs, targets, indices, num_boxes))
+        for loss in self.losses:
+            if loss == "labels":
+                losses.update(self.loss_labels(outputs_wo_aux, targets, indices, num_boxes))
+            elif loss == "boxes":
+                losses.update(self.loss_boxes(outputs_wo_aux, targets, indices, num_boxes))
 
         return losses

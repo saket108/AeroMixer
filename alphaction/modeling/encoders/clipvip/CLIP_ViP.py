@@ -768,7 +768,7 @@ class CLIPEncoder(nn.Module):
         for idx, encoder_layer in enumerate(self.layers):
             if output_hidden_states:
                 encoder_states = encoder_states + (hidden_states,)
-            if self.gradient_checkpointing and self.training:
+            if self.gradient_checkpointing and self.training and torch.is_grad_enabled() and hidden_states.requires_grad:
 
                 def create_custom_forward(module):
                     def custom_forward(*inputs):
@@ -782,6 +782,7 @@ class CLIPEncoder(nn.Module):
                     inputs_size,
                     attention_mask,
                     causal_attention_mask,
+                    use_reentrant=False,
                 )
             else:
                 layer_outputs = encoder_layer(
