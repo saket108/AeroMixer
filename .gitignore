@@ -15,6 +15,7 @@ data/aircraft/labels/
 
 # ---------------- Training outputs ----------------
 output/
+outputs/
 runs/
 checkpoints/
 
@@ -26,6 +27,9 @@ checkpoints/
 *.zip
 *.tar
 *.gz
+
+# ---------------- Generated synthetic data ----------------
+data/synth_*/
 
 # ---------------- VS Code ----------------
 .vscode/
