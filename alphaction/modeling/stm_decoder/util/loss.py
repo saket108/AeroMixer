@@ -131,12 +131,71 @@ class SetCriterion(nn.Module):
             "loss_giou": loss_giou,
         }
 
+    # ---------------- SEVERITY LOSS ----------------
+
+    def loss_severity(self, outputs, targets, indices, num_boxes):
+        if "pred_severity" not in outputs:
+            zero = outputs["pred_boxes"].sum() * 0.0
+            return {"loss_severity": zero}
+
+        pred_severity = outputs["pred_severity"]
+        if pred_severity.ndim == 3 and pred_severity.size(-1) == 1:
+            pred_severity = pred_severity[..., 0]
+
+        src_severity = []
+        tgt_severity = []
+        for batch_idx, (src_idx, tgt_idx) in enumerate(indices):
+            if src_idx.numel() == 0 or tgt_idx.numel() == 0:
+                continue
+            target_item = targets[batch_idx]
+            if "severity" not in target_item:
+                continue
+
+            target_severity_all = target_item["severity"].reshape(-1)
+            if target_severity_all.numel() == 0:
+                continue
+
+            pred_vals = pred_severity[batch_idx, src_idx].reshape(-1)
+            tgt_vals = target_severity_all[tgt_idx].reshape(-1)
+            valid = torch.isfinite(tgt_vals)
+            if valid.any():
+                src_severity.append(pred_vals[valid])
+                tgt_severity.append(tgt_vals[valid])
+
+        if len(src_severity) == 0:
+            zero = outputs["pred_boxes"].sum() * 0.0
+            return {"loss_severity": zero}
+
+        src_severity = torch.cat(src_severity, dim=0)
+        tgt_severity = torch.cat(tgt_severity, dim=0)
+        loss_severity = F.smooth_l1_loss(src_severity, tgt_severity, reduction="sum")
+        loss_severity = loss_severity / max(src_severity.numel(), 1)
+
+        return {"loss_severity": loss_severity}
+
     # ---------------- UTILS ----------------
 
     def _get_src_permutation_idx(self, indices):
         batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
         src_idx = torch.cat([src for (src, _) in indices])
         return batch_idx, src_idx
+
+    def _compute_losses(self, outputs, targets, indices, num_boxes, suffix=""):
+        losses = {}
+        for loss in self.losses:
+            if loss == "labels":
+                losses_this = self.loss_labels(outputs, targets, indices, num_boxes)
+            elif loss == "boxes":
+                losses_this = self.loss_boxes(outputs, targets, indices, num_boxes)
+            elif loss == "severity":
+                losses_this = self.loss_severity(outputs, targets, indices, num_boxes)
+            else:
+                continue
+
+            if suffix:
+                losses_this = {f"{k}_{suffix}": v for k, v in losses_this.items()}
+            losses.update(losses_this)
+        return losses
 
     # ---------------- FORWARD ----------------
 
@@ -149,11 +208,19 @@ class SetCriterion(nn.Module):
         num_boxes = torch.as_tensor([num_boxes], dtype=torch.float, device=outputs_wo_aux["pred_logits"].device)
         num_boxes = torch.clamp(num_boxes, min=1).item()
 
-        losses = {}
-        for loss in self.losses:
-            if loss == "labels":
-                losses.update(self.loss_labels(outputs_wo_aux, targets, indices, num_boxes))
-            elif loss == "boxes":
-                losses.update(self.loss_boxes(outputs_wo_aux, targets, indices, num_boxes))
+        losses = self._compute_losses(outputs_wo_aux, targets, indices, num_boxes)
+
+        if "aux_outputs" in outputs:
+            for i, aux_outputs in enumerate(outputs["aux_outputs"]):
+                aux_indices = self.matcher(aux_outputs, targets)
+                losses.update(
+                    self._compute_losses(
+                        aux_outputs,
+                        targets,
+                        aux_indices,
+                        num_boxes,
+                        suffix=str(i),
+                    )
+                )
 
         return losses

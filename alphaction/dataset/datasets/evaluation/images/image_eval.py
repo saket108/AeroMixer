@@ -148,6 +148,98 @@ def _prepare_for_multimodal_image_ap(predictions, dataset, score_thresh=0.0, tex
     return results, targets
 
 
+def _box_area_pixels(boxes_norm, resolution):
+    if boxes_norm is None or len(boxes_norm) == 0:
+        return np.zeros((0,), dtype=np.float32)
+    h, w = resolution
+    widths = np.clip(boxes_norm[:, 2] - boxes_norm[:, 0], a_min=0.0, a_max=None) * float(w)
+    heights = np.clip(boxes_norm[:, 3] - boxes_norm[:, 1], a_min=0.0, a_max=None) * float(h)
+    return (widths * heights).astype(np.float32)
+
+
+def _filter_by_area(results, targets, area_min, area_max):
+    filtered_results = {}
+    filtered_targets = {}
+    total_gt = 0
+    total_det = 0
+
+    for image_key, target in targets.items():
+        resolution = target["resolution"]
+        gt_boxes = target["bbox"]
+        gt_labels = np.asarray(target["labels"], dtype=np.int64)
+        gt_areas = _box_area_pixels(gt_boxes, resolution)
+        gt_mask = (gt_areas >= float(area_min)) & (gt_areas < float(area_max))
+        gt_boxes_keep = gt_boxes[gt_mask]
+        gt_labels_keep = gt_labels[gt_mask].tolist()
+        total_gt += int(gt_mask.sum())
+
+        filtered_targets[image_key] = {
+            "bbox": gt_boxes_keep,
+            "labels": gt_labels_keep,
+            "resolution": resolution,
+        }
+
+        det = results.get(image_key, None)
+        if det is None:
+            continue
+        det_boxes = det["boxes"]
+        det_scores = np.asarray(det["scores"], dtype=np.float32)
+        det_labels = np.asarray(det["action_ids"], dtype=np.int64)
+        det_areas = _box_area_pixels(det_boxes, resolution)
+        det_mask = (det_areas >= float(area_min)) & (det_areas < float(area_max))
+        total_det += int(det_mask.sum())
+        filtered_results[image_key] = {
+            "boxes": det_boxes[det_mask],
+            "scores": det_scores[det_mask],
+            "action_ids": det_labels[det_mask],
+        }
+
+    return filtered_results, filtered_targets, total_gt, total_det
+
+
+def _extract_map_key(eval_res):
+    for key in eval_res.keys():
+        if "Precision/mAP@" in str(key):
+            return key
+    return None
+
+
+def _compute_area_ap_breakdown(results, targets, dataset, logger):
+    iou_value = float(dataset.test_iou_thresh)
+    area_bins = [
+        ("small", 0.0, 32.0 * 32.0),
+        ("medium", 32.0 * 32.0, 96.0 * 96.0),
+        ("large", 96.0 * 96.0, float("inf")),
+    ]
+    out = {}
+
+    for name, area_min, area_max in area_bins:
+        det_bin, tgt_bin, num_gt, num_det = _filter_by_area(results, targets, area_min, area_max)
+        out[f"Area/{name}/num_gt"] = int(num_gt)
+        out[f"Area/{name}/num_det"] = int(num_det)
+
+        if num_gt <= 0:
+            out[f"Area/{name}/mAP@{iou_value}IOU"] = -1.0
+            continue
+
+        try:
+            eval_bin = frame_mAP_pascal(
+                det_bin,
+                tgt_bin,
+                dataset.closed_set_classes,
+                logger,
+                iou_list=[iou_value],
+            )
+            map_key = _extract_map_key(eval_bin)
+            map_val = float(eval_bin[map_key]) if map_key is not None else -1.0
+        except Exception:
+            map_val = -1.0
+        out[f"Area/{name}/mAP@{iou_value}IOU"] = map_val
+
+    out[f"SmallObject/AP@{iou_value}IOU"] = out.get(f"Area/small/mAP@{iou_value}IOU", -1.0)
+    return out
+
+
 def evaluate_with_text_prompts(predictions, dataset, text_prompts, output_folder=None, logger=None):
     """Evaluate predictions with text prompts for open vocabulary detection.
     
@@ -237,6 +329,7 @@ def do_image_evaluation(dataset, predictions, output_folder, logger, metric="ima
         logger,
         iou_list=[dataset.test_iou_thresh],
     )
+    eval_res.update(_compute_area_ap_breakdown(results, targets, dataset, logger))
 
     logger.info("Evaluation results ({}):\n{}".format(eval_metric, pformat(eval_res, indent=2)))
     if output_folder:
@@ -286,6 +379,7 @@ def do_multimodal_image_evaluation(dataset, predictions, output_folder, logger, 
         logger,
         iou_list=[dataset.test_iou_thresh],
     )
+    eval_res.update(_compute_area_ap_breakdown(results, targets, dataset, logger))
 
     logger.info("Multimodal evaluation results ({}):\n{}".format(eval_metric, pformat(eval_res, indent=2)))
     if output_folder:

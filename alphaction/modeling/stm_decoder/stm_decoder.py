@@ -3,6 +3,7 @@ STM Decoder for Image Multimodal Models.
 Converted to support image + text multimodal (temporal concepts removed/disabled).
 """
 
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -165,6 +166,7 @@ class AMStage(nn.Module):
                  num_cls_fcs=1,
                  num_reg_fcs=1,
                  num_action_fcs=1,
+                 num_severity_fcs=1,
                  num_classes_object=1,
                  num_classes_action=80,
                  open_vocabulary=False,
@@ -177,6 +179,11 @@ class AMStage(nn.Module):
                  num_queries=100,
                  dest=False,
                  image_mode=True,  # Default to image mode
+                 predict_severity=False,
+                 iof_tau_mode="learned",
+                 iof_tau_fixed=0.0,
+                 iof_tau_clamp_min=0.0,
+                 iof_tau_clamp_max=4.0,
                  ):
 
 
@@ -195,6 +202,11 @@ class AMStage(nn.Module):
         self.dest = dest
         self.image_mode = image_mode
         self.detection_only = True
+        self.predict_severity = predict_severity
+        self.iof_tau_mode = str(iof_tau_mode).lower()
+        self.iof_tau_fixed = float(iof_tau_fixed)
+        self.iof_tau_clamp_min = float(iof_tau_clamp_min)
+        self.iof_tau_clamp_max = float(iof_tau_clamp_max)
 
         # Build temporal branch ONLY for video (not image mode)
         if not pretrained_action and not image_mode:
@@ -245,6 +257,19 @@ class AMStage(nn.Module):
                 _get_activation_layer(ffn_act_cfg))
         self.fc_reg = nn.Linear(reg_feature_dim, 4)
 
+        self.severity_fcs = nn.ModuleList()
+        if self.predict_severity:
+            for _ in range(num_severity_fcs):
+                self.severity_fcs.append(
+                    nn.Linear(reg_feature_dim, reg_feature_dim, bias=True))
+                self.severity_fcs.append(
+                    nn.LayerNorm(reg_feature_dim, eps=1e-5))
+                self.severity_fcs.append(
+                    _get_activation_layer(ffn_act_cfg))
+            self.fc_severity = nn.Linear(reg_feature_dim, 1)
+        else:
+            self.fc_severity = None
+
         self.open_vocabulary = False
 
         if not self.detection_only:
@@ -281,16 +306,58 @@ class AMStage(nn.Module):
         bias_init = bias_init_with_prob(0.01)
         if hasattr(self, 'fc_action'):
             nn.init.constant_(self.fc_action.bias, bias_init)
+        if self.fc_severity is not None:
+            nn.init.zeros_(self.fc_severity.weight)
+            nn.init.zeros_(self.fc_severity.bias)
         nn.init.zeros_(self.fc_reg.weight)
         nn.init.zeros_(self.fc_reg.bias)
         nn.init.uniform_(self.iof_tau, 0.0, 4.0)
         self.samplingmixing.init_weights()
 
+    @torch.no_grad()
+    def _summarize_attention(self, attn_weights):
+        if attn_weights is None:
+            return {}
+
+        weights = attn_weights.detach()
+        if weights.ndim == 3:
+            # Older torch may return [B, Q, K] when averaged across heads.
+            weights = weights[:, None, :, :]
+
+        eps = 1e-9
+        entropy = -(weights * (weights + eps).log()).sum(dim=-1)
+        entropy = entropy / math.log(max(weights.size(-1), 2))
+        diag = weights.diagonal(dim1=-2, dim2=-1)
+        top1 = weights.max(dim=-1).values
+
+        return {
+            "entropy": float(entropy.mean().item()),
+            "diag": float(diag.mean().item()),
+            "top1": float(top1.mean().item()),
+        }
+
+    def _resolve_iof_tau(self):
+        mode = self.iof_tau_mode
+        if mode == "learned":
+            return self.iof_tau
+        if mode == "zero":
+            return torch.zeros_like(self.iof_tau)
+        if mode == "fixed":
+            return torch.full_like(self.iof_tau, self.iof_tau_fixed)
+        if mode == "clamp":
+            return self.iof_tau.clamp(min=self.iof_tau_clamp_min, max=self.iof_tau_clamp_max)
+        raise ValueError(
+            f"Unsupported IOF_TAU_MODE='{self.iof_tau_mode}'. "
+            "Use 'learned', 'zero', 'fixed', or 'clamp'."
+        )
+
 
     def forward(self, features, proposal_boxes, spatial_queries, temporal_queries=None, 
-                featmap_strides=[4, 8, 16, 32], text_features=None, tau_inv=100, vis_cls_feat=None, patch_feat=None, text_token_feats=None, labels=None, cond=None):
+                featmap_strides=[4, 8, 16, 32], text_features=None, tau_inv=100, vis_cls_feat=None, patch_feat=None, text_token_feats=None, labels=None, cond=None,
+                collect_attn_stats=False, compare_nomask=False):
 
         N, n_query = spatial_queries.shape[:2]
+        attn_stats = None
 
         with torch.no_grad():
             rois = decode_box(proposal_boxes)
@@ -300,13 +367,52 @@ class AMStage(nn.Module):
             pe = position_embedding(proposal_boxes, spatial_queries.size(-1) // 4)
 
         # IoF attention bias
-        attn_bias = (iof * self.iof_tau.view(1, -1, 1, 1)).flatten(0, 1)
+        effective_tau = self._resolve_iof_tau()
+        attn_bias = (iof * effective_tau.view(1, -1, 1, 1)).flatten(0, 1)
         pe = pe.permute(1, 0, 2)
 
         # Spatial attention (always enabled)
         spatial_queries = spatial_queries.permute(1, 0, 2)
         spatial_queries_attn = spatial_queries + pe
-        spatial_queries = self.attention_s(spatial_queries_attn, attn_mask=attn_bias,)
+        if collect_attn_stats:
+            spatial_queries, attn_weights = self.attention_s(
+                spatial_queries_attn,
+                attn_mask=attn_bias,
+                return_attn_weights=True,
+                average_attn_weights=False,
+            )
+            attn_stats = self._summarize_attention(attn_weights)
+            tau_vals = effective_tau.detach()
+            bias_vals = attn_bias.detach()
+            attn_stats.update(
+                {
+                    "tau_min": float(tau_vals.min().item()),
+                    "tau_mean": float(tau_vals.mean().item()),
+                    "tau_max": float(tau_vals.max().item()),
+                    "bias_min": float(bias_vals.min().item()),
+                    "bias_mean": float(bias_vals.mean().item()),
+                    "bias_max": float(bias_vals.max().item()),
+                }
+            )
+
+            if compare_nomask:
+                with torch.no_grad():
+                    _, attn_weights_nomask = self.attention_s(
+                        spatial_queries_attn,
+                        attn_mask=None,
+                        return_attn_weights=True,
+                        average_attn_weights=False,
+                    )
+                nomask_stats = self._summarize_attention(attn_weights_nomask)
+                attn_stats.update(
+                    {
+                        "entropy_nomask": nomask_stats.get("entropy", 0.0),
+                        "diag_nomask": nomask_stats.get("diag", 0.0),
+                        "top1_nomask": nomask_stats.get("top1", 0.0),
+                    }
+                )
+        else:
+            spatial_queries = self.attention_s(spatial_queries_attn, attn_mask=attn_bias,)
         spatial_queries = self.attention_norm_s(spatial_queries)
         spatial_queries = spatial_queries.permute(1, 0, 2)
 
@@ -347,6 +453,13 @@ class AMStage(nn.Module):
             reg_feat = reg_layer(reg_feat)
         xyzr_delta = self.fc_reg(reg_feat).view(N, n_query, -1)
 
+        severity_score = None
+        if self.predict_severity and self.fc_severity is not None:
+            severity_feat = reg_feat
+            for sev_layer in self.severity_fcs:
+                severity_feat = sev_layer(severity_feat)
+            severity_score = self.fc_severity(severity_feat).view(N, n_query)
+
         # Action head (simplified for image mode)
         if self.open_vocabulary:
             # Image mode: use spatial features only
@@ -359,7 +472,7 @@ class AMStage(nn.Module):
         if temporal_queries is not None:
             temporal_queries = temporal_queries.view(N, n_query, -1)
         
-        return cls_score, action_score, xyzr_delta, spatial_queries, temporal_queries
+        return cls_score, action_score, severity_score, xyzr_delta, spatial_queries, temporal_queries, attn_stats
 
 
 
@@ -378,6 +491,7 @@ class STMDecoder(nn.Module):
         self.open_vocabulary = cfg.DATA.OPEN_VOCABULARY
         self.multi_label_action = cfg.MODEL.MULTI_LABEL_ACTION
         self.use_pretrained_action = cfg.MODEL.STM.PRETRAIN_ACTION
+        self.predict_severity = cfg.MODEL.STM.PREDICT_SEVERITY
         if self.use_pretrained_action:
             assert self.open_vocabulary
         
@@ -410,6 +524,7 @@ class STMDecoder(nn.Module):
                 num_cls_fcs=cfg.MODEL.STM.NUM_CLS,
                 num_reg_fcs=cfg.MODEL.STM.NUM_REG,
                 num_action_fcs=cfg.MODEL.STM.NUM_ACT,
+                num_severity_fcs=cfg.MODEL.STM.NUM_SEV,
                 num_classes_object=cfg.MODEL.STM.OBJECT_CLASSES,
                 num_classes_action=cfg.MODEL.STM.ACTION_CLASSES,
                 open_vocabulary=cfg.DATA.OPEN_VOCABULARY,
@@ -422,19 +537,28 @@ class STMDecoder(nn.Module):
                 num_queries=self.num_queries,
                 dest=cfg.MODEL.STM.DeST,
                 image_mode=image_mode,  # Pass image_mode
+                predict_severity=self.predict_severity,
+                iof_tau_mode=cfg.MODEL.STM.IOF_TAU_MODE,
+                iof_tau_fixed=cfg.MODEL.STM.IOF_TAU_FIXED,
+                iof_tau_clamp_min=cfg.MODEL.STM.IOF_TAU_CLAMP_MIN,
+                iof_tau_clamp_max=cfg.MODEL.STM.IOF_TAU_CLAMP_MAX,
                 )
             self.decoder_stages.append(decoder_stage)
 
         object_weight = cfg.MODEL.STM.OBJECT_WEIGHT
         giou_weight   = cfg.MODEL.STM.GIOU_WEIGHT
         l1_weight     = cfg.MODEL.STM.L1_WEIGHT
+        severity_weight = cfg.MODEL.STM.SEVERITY_WEIGHT
         background_weight = cfg.MODEL.STM.BACKGROUND_WEIGHT
 
-        self.weight_dict = {
+        base_weight_dict = {
             "loss_ce": object_weight,
             "loss_bbox": l1_weight,
             "loss_giou": giou_weight
         }
+        if self.predict_severity:
+            base_weight_dict["loss_severity"] = severity_weight
+        self.weight_dict = dict(base_weight_dict)
 
         use_focal = False
         
@@ -443,6 +567,12 @@ class STMDecoder(nn.Module):
         self.cond_cls = cfg.MODEL.STM.COND_CLS
         self.fuse_cls = cfg.MODEL.STM.FUSE_CLS
         self.cond_type = cfg.MODEL.STM.COND_MODALITY
+        self.attn_telemetry = bool(getattr(cfg.MODEL.STM, "ATTN_TELEMETRY", False))
+        self.attn_telemetry_stagewise = bool(getattr(cfg.MODEL.STM, "ATTN_TELEMETRY_STAGEWISE", True))
+        self.attn_telemetry_compare_nomask = bool(
+            getattr(cfg.MODEL.STM, "ATTN_TELEMETRY_COMPARE_NOMASK", False)
+        )
+        self.last_attn_metrics = {}
 
         matcher = HungarianMatcher(cfg=cfg,
                                    cost_class=object_weight,
@@ -452,10 +582,12 @@ class STMDecoder(nn.Module):
         self.intermediate_supervision = cfg.MODEL.STM.INTERMEDIATE_SUPERVISION
         if self.intermediate_supervision:
             for i in range(self.num_stages - 1):
-                inter_weight_dict = {k + f"_{i}": v for k, v in self.weight_dict.items()}
+                inter_weight_dict = {f"{k}_{i}": v for k, v in base_weight_dict.items()}
                 self.weight_dict.update(inter_weight_dict)
 
         losses = ["labels", "boxes"]
+        if self.predict_severity:
+            losses.append("severity")
         self.criterion = SetCriterion(cfg=cfg,
                                       num_classes=cfg.MODEL.STM.OBJECT_CLASSES,
                                       matcher=matcher,
@@ -466,9 +598,24 @@ class STMDecoder(nn.Module):
     def _generate_queries(self, cfg):
         self.num_queries = cfg.MODEL.STM.NUM_QUERIES
         self.hidden_dim = cfg.MODEL.STM.HIDDEN_DIM
+        self.query_init_mode = str(getattr(cfg.MODEL.STM, "QUERY_INIT_MODE", "learnable_anchors")).lower()
+        self.query_init_base_scale = float(getattr(cfg.MODEL.STM, "QUERY_INIT_BASE_SCALE", 0.2))
+        self.query_init_min_scale = float(getattr(cfg.MODEL.STM, "QUERY_INIT_MIN_SCALE", 0.02))
+        self.query_init_max_scale = float(getattr(cfg.MODEL.STM, "QUERY_INIT_MAX_SCALE", 0.60))
+        self.query_init_center_offset = float(getattr(cfg.MODEL.STM, "QUERY_INIT_CENTER_OFFSET", 0.25))
+        self.query_init_log_wh_clamp = float(getattr(cfg.MODEL.STM, "QUERY_INIT_LOG_WH_CLAMP", 2.0))
+        self.query_init_small_object_bias = bool(getattr(cfg.MODEL.STM, "QUERY_INIT_SMALL_OBJECT_BIAS", True))
+        self.query_init_small_object_scale = float(getattr(cfg.MODEL.STM, "QUERY_INIT_SMALL_OBJECT_SCALE", 0.70))
 
         # Build spatial queries (always enabled)
         self.init_spatial_queries = nn.Embedding(self.num_queries, self.hidden_dim)
+
+        # Learnable anchor-like priors used by default query initialization.
+        base_xy, base_wh = self._build_anchor_priors(self.num_queries, self.query_init_base_scale)
+        self.register_buffer("query_anchor_base_xy", base_xy)
+        self.register_buffer("query_anchor_base_wh", base_wh)
+        self.query_anchor_center_delta = nn.Parameter(torch.zeros(self.num_queries, 2))
+        self.query_anchor_log_wh_delta = nn.Parameter(torch.zeros(self.num_queries, 2))
         
         # Build temporal queries only for video mode (not image mode)
         if not self.use_pretrained_action and not self.image_mode:
@@ -476,9 +623,22 @@ class STMDecoder(nn.Module):
         else:
             self.init_temporal_queries = None
 
-    def _box_init(self, whwh, extras={}):
+    def _build_anchor_priors(self, num_queries, base_scale):
+        rows = int(math.floor(math.sqrt(num_queries)))
+        cols = int(math.ceil(float(num_queries) / max(rows, 1)))
+        ys = (torch.arange(rows, dtype=torch.float32) + 0.5) / max(rows, 1)
+        xs = (torch.arange(cols, dtype=torch.float32) + 0.5) / max(cols, 1)
+        yy, xx = torch.meshgrid(ys, xs, indexing="ij")
+        base_xy = torch.stack([xx, yy], dim=-1).reshape(-1, 2)[:num_queries]
+        base_wh = torch.full((num_queries, 2), float(base_scale), dtype=torch.float32)
+        return base_xy, base_wh
+
+    def _box_init(self, whwh, extras=None):
+        if extras is None:
+            extras = {}
         num_queries = self.num_queries
         batch_size = len(whwh)
+        device = whwh.device
 
         if 'prior_boxes' in extras:
             proposals = [box_sampling_from_prior(extras['prior_boxes'][b], num_boxes=num_queries, device=whwh.device)
@@ -493,12 +653,34 @@ class STMDecoder(nn.Module):
                 raise NotImplementedError
             proposals = torch.stack(proposals, dim=0)
         else:
-            proposals = torch.ones(num_queries, 4, dtype=torch.float, device=self.device, requires_grad=False)
-            proposals[:, :2] = 0.5
-            proposals = box_cxcywh_to_xyxy(proposals)
+            if self.query_init_mode == "full_image":
+                proposals = torch.ones(num_queries, 4, dtype=torch.float32, device=device, requires_grad=False)
+                proposals[:, :2] = 0.5
+                proposals = box_cxcywh_to_xyxy(proposals)
+                proposals = proposals[None] * whwh[:, None, :]
+            elif self.query_init_mode == "learnable_anchors":
+                centers = self.query_anchor_base_xy.to(device=device) + torch.tanh(
+                    self.query_anchor_center_delta.to(device=device)
+                ) * self.query_init_center_offset
+                centers = centers.clamp(0.01, 0.99)
 
-            whwh = whwh[:, None, :]
-            proposals = proposals[None] * whwh
+                wh = self.query_anchor_base_wh.to(device=device) * torch.exp(
+                    self.query_anchor_log_wh_delta.to(device=device).clamp(
+                        min=-self.query_init_log_wh_clamp, max=self.query_init_log_wh_clamp
+                    )
+                )
+                if self.query_init_small_object_bias:
+                    wh = wh * self.query_init_small_object_scale
+                wh = wh.clamp(min=self.query_init_min_scale, max=self.query_init_max_scale)
+
+                proposals_norm = torch.cat([centers, wh], dim=-1)
+                proposals_norm = box_cxcywh_to_xyxy(proposals_norm).clamp(0.0, 1.0)
+                proposals = proposals_norm[None] * whwh[:, None, :]
+            else:
+                raise ValueError(
+                    f"Unsupported QUERY_INIT_MODE='{self.query_init_mode}'. "
+                    "Use 'learnable_anchors' or 'full_image'."
+                )
 
         xyzr = box_xyxy_to_xyzr(proposals)
         xyzr = xyzr.detach()
@@ -506,7 +688,9 @@ class STMDecoder(nn.Module):
         return xyzr
 
 
-    def _decode_init_queries(self, whwh, cond=None, extras={}):
+    def _decode_init_queries(self, whwh, cond=None, extras=None):
+        if extras is None:
+            extras = {}
         
         batch_size = len(whwh)
         xyzr = self._box_init(whwh, extras)
@@ -534,6 +718,39 @@ class STMDecoder(nn.Module):
     
         return xyzr, init_spatial_queries, init_temporal_queries
 
+    def _build_attention_metrics(self, stage_stats, device):
+        if not stage_stats:
+            return {}
+
+        valid_stats = [stat for stat in stage_stats if isinstance(stat, dict) and len(stat) > 0]
+        if not valid_stats:
+            return {}
+
+        metrics = {}
+        metric_keys = sorted({key for stat in valid_stats for key in stat.keys()})
+        for key in metric_keys:
+            vals = [float(stat[key]) for stat in valid_stats if key in stat]
+            if not vals:
+                continue
+            metrics[f"attn_{key}_avg"] = torch.tensor(
+                sum(vals) / len(vals),
+                device=device,
+                dtype=torch.float32,
+            )
+
+        if self.attn_telemetry_stagewise:
+            for stage_idx, stat in enumerate(stage_stats):
+                if not isinstance(stat, dict):
+                    continue
+                for key, value in stat.items():
+                    metrics[f"attn_s{stage_idx}_{key}"] = torch.tensor(
+                        float(value),
+                        device=device,
+                        dtype=torch.float32,
+                    )
+
+        return metrics
+
 
     def forward(
         self,
@@ -541,7 +758,7 @@ class STMDecoder(nn.Module):
         whwh,
         gt_boxes=None,
         labels=None,
-        extras={},
+        extras=None,
         part_forward=-1,
         text_features=None,
         tau_inv=100,
@@ -549,6 +766,8 @@ class STMDecoder(nn.Module):
         patch_feat=None,
         text_token_feats=None
     ):
+        if extras is None:
+            extras = {}
 
         # Optional conditioning
         cond = None
@@ -562,13 +781,15 @@ class STMDecoder(nn.Module):
 
         inter_class_logits = []
         inter_pred_bboxes = []
+        inter_pred_severity = []
+        stage_attn_stats = []
 
         B, N, _ = spatial_queries.size()
 
         # Decoder stages
         for decoder_stage in self.decoder_stages:
 
-            cls_logits, _, delta_xyzr, spatial_queries, temporal_queries = decoder_stage(
+            cls_logits, _, severity_pred, delta_xyzr, spatial_queries, temporal_queries, attn_stats = decoder_stage(
                 features,
                 proposal_boxes,
                 spatial_queries,
@@ -579,18 +800,41 @@ class STMDecoder(nn.Module):
                 patch_feat=patch_feat,
                 text_token_feats=text_token_feats,
                 labels=labels,
-                cond=cond
+                cond=cond,
+                collect_attn_stats=self.attn_telemetry,
+                compare_nomask=self.attn_telemetry_compare_nomask,
            )
 
             proposal_boxes, pred_boxes = refine_xyzr(proposal_boxes, delta_xyzr)
 
             inter_class_logits.append(cls_logits)
             inter_pred_bboxes.append(pred_boxes)
+            inter_pred_severity.append(severity_pred)
+            stage_attn_stats.append(attn_stats)
+
+        attn_metrics = {}
+        if self.attn_telemetry:
+            attn_metrics = self._build_attention_metrics(stage_attn_stats, device=whwh.device)
+            refine_l1_terms = []
+            if len(inter_pred_bboxes) > 1:
+                whwh_view = whwh[:, None, :]
+                for stage_idx in range(1, len(inter_pred_bboxes)):
+                    prev_boxes = inter_pred_bboxes[stage_idx - 1] / whwh_view
+                    cur_boxes = inter_pred_bboxes[stage_idx] / whwh_view
+                    delta_l1 = (cur_boxes - prev_boxes).abs().mean()
+                    attn_metrics[f"refine_l1_s{stage_idx}"] = delta_l1.detach()
+                    refine_l1_terms.append(delta_l1.detach())
+                if refine_l1_terms:
+                    attn_metrics["refine_l1_avg"] = torch.stack(refine_l1_terms).mean()
+            self.last_attn_metrics = {k: float(v.detach().cpu().item()) for k, v in attn_metrics.items()}
+        else:
+            self.last_attn_metrics = {}
 
         # Inference mode
         if not self.training:
             logits = inter_class_logits[-1]
             boxes  = inter_pred_bboxes[-1]
+            severity_scores = inter_pred_severity[-1]
 
             probs = logits.softmax(-1)
             scores, labels = probs[..., :-1].max(-1)
@@ -612,21 +856,40 @@ class STMDecoder(nn.Module):
                 cur_boxes[:, 0::2] /= w
                 cur_boxes[:, 1::2] /= h
 
-                results.append({
+                result_i = {
                     "scores": cur_scores,
                     "labels": cur_labels,
                     "boxes": cur_boxes
-                })
+                }
+                if severity_scores is not None:
+                    cur_severity = torch.sigmoid(severity_scores[i][keep])
+                    result_i["severity"] = cur_severity
+                results.append(result_i)
 
             return results
 
         # Training mode
-        targets = self.make_targets(gt_boxes, whwh, labels)
+        targets = self.make_targets(gt_boxes, whwh, labels, extras=extras)
 
         output = {
             "pred_logits": inter_class_logits[-1],
             "pred_boxes": inter_pred_bboxes[-1],
         }
+        if inter_pred_severity[-1] is not None:
+            output["pred_severity"] = inter_pred_severity[-1]
+        if self.intermediate_supervision and len(inter_class_logits) > 1:
+            aux_outputs = []
+            for aux_logits, aux_boxes, aux_severity in zip(
+                inter_class_logits[:-1], inter_pred_bboxes[:-1], inter_pred_severity[:-1]
+            ):
+                aux_item = {
+                    "pred_logits": aux_logits,
+                    "pred_boxes": aux_boxes,
+                }
+                if aux_severity is not None:
+                    aux_item["pred_severity"] = aux_severity
+                aux_outputs.append(aux_item)
+            output["aux_outputs"] = aux_outputs
 
         losses = self.criterion(output, targets)
 
@@ -634,20 +897,23 @@ class STMDecoder(nn.Module):
             if k in self.weight_dict:
                losses[k] *= self.weight_dict[k]
 
+        if self.attn_telemetry and attn_metrics:
+            losses.update({k: v.detach() for k, v in attn_metrics.items()})
+
         return losses
 
-    def make_targets(self, gt_boxes, whwh, labels):
+    def make_targets(self, gt_boxes, whwh, labels, extras=None):
         """Universal targets builder for image detection."""
         targets = []
-        for boxes_img, frame_size, label in zip(gt_boxes, whwh, labels):
+        for idx, (boxes_img, frame_size, label) in enumerate(zip(gt_boxes, whwh, labels)):
             target = {}
-            boxes = torch.tensor(boxes_img, dtype=torch.float32, device=self.device)
+            boxes = torch.as_tensor(boxes_img, dtype=torch.float32, device=self.device)
             target["boxes_xyxy"] = boxes
 
             if label is None or len(label) == 0:
                 class_ids = torch.zeros(len(boxes), dtype=torch.int64, device=self.device)
             else:
-                label = torch.tensor(label, device=self.device)
+                label = torch.as_tensor(label, device=self.device)
                 if label.ndim == 1:
                     class_ids = label.long()
                 else:
@@ -657,8 +923,24 @@ class STMDecoder(nn.Module):
             target["image_size_xyxy"] = frame_size.to(self.device)
             target["image_size_xyxy_tgt"] = frame_size.unsqueeze(0).repeat(len(boxes), 1).to(self.device)
 
+            severity_values = None
+            if isinstance(extras, dict) and "severity" in extras:
+                severity_raw = extras["severity"]
+                if isinstance(severity_raw, (list, tuple)):
+                    if idx < len(severity_raw):
+                        severity_values = severity_raw[idx]
+                else:
+                    severity_values = severity_raw
+
+            if severity_values is not None:
+                severity_tensor = torch.as_tensor(severity_values, dtype=torch.float32, device=self.device).reshape(-1)
+                if severity_tensor.numel() == 1 and len(boxes) > 1:
+                    severity_tensor = severity_tensor.repeat(len(boxes))
+                if severity_tensor.numel() == len(boxes):
+                    target["severity"] = severity_tensor
+
             if not self.use_pretrained_action:
-                if label.ndim == 2:
+                if label is not None and label.ndim == 2:
                     target["action_labels"] = label.float()
                 else:
                     num_classes = self.criterion.num_classes

@@ -3,7 +3,7 @@
 Image-only dataset for AeroMixer.
 Supports multiple detection annotation formats:
 1) Plain text split files:
-    <image_rel_path> x1 y1 x2 y2 class_id
+    <image_rel_path> x1 y1 x2 y2 class_id [severity]
    with files at <PATH_TO_DATA_DIR>/{train,test}.txt (or annotations.txt).
 2) YOLOv5/YOLOv8-style labels:
    <PATH_TO_DATA_DIR>/images/{train,val}/...
@@ -124,7 +124,10 @@ class ImageDataset(torch.utils.data.Dataset):
                 )
             else:
                 labels = np.zeros((0,), dtype=np.int64)
-            self.samples.append({"image_rel": img_rel, "boxes": boxes, "labels": labels})
+            severities = None
+            if len(ann) and ann.shape[1] > 5:
+                severities = ann[:, 5].astype(np.float32)
+            self.samples.append({"image_rel": img_rel, "boxes": boxes, "labels": labels, "severity": severities})
 
         logger.info(
             f"Loaded ImageDataset(split={split}, mode={self.annotation_mode}, multimodal={self.multimodal}) with {len(self.samples)} images and "
@@ -228,6 +231,8 @@ class ImageDataset(torch.utils.data.Dataset):
             width=width,
             resolution=(height, width),
         )
+        if sample.get("severity", None) is not None:
+            result["severity"] = sample["severity"]
         
         # Add multimodal information if enabled
         if self.multimodal:
@@ -280,6 +285,8 @@ class ImageDataset(torch.utils.data.Dataset):
 
 
         extras = {"extra_boxes": None, "image_rel": img_rel, "sample_id": index}
+        if sample.get("severity", None) is not None:
+            extras["severity"] = sample["severity"].astype(np.float32)
 
         boxes_out = boxes_proc if boxes_proc is None else boxes_proc.astype(np.float32)
         
@@ -354,7 +361,8 @@ class ImageDataset(torch.utils.data.Dataset):
                 img_rel = self._normalize_relpath(parts[0])
                 x1, y1, x2, y2 = map(float, parts[1:5])
                 cls = int(parts[5])
-                samples[img_rel].append([x1, y1, x2, y2, cls])
+                severity = float(parts[6]) if len(parts) >= 7 else float("nan")
+                samples[img_rel].append([x1, y1, x2, y2, cls, severity])
                 classes_set.add(cls)
         if len(samples) == 0:
             raise AssertionError(f"No valid annotations found in {ann_file}")

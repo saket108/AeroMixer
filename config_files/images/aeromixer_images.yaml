@@ -9,17 +9,32 @@ DATA:
   STD: [0.26862954, 0.26130258, 0.27577711]
   DATASETS: ['aircraft']
   OPEN_VOCABULARY: False
+  # Keep more spatial detail for small defects.
+  TRAIN_MIN_SCALES: [512, 640]
+  TEST_MIN_SCALES: [640]
 
 MODEL:
   MULTI_LABEL_ACTION: False
   PRE_EXTRACT_FEAT: False
 
   BACKBONE:
-    CONV_BODY: "ViT-B/32"
+    # Finer patching improves thin-crack and small-defect sensitivity.
+    CONV_BODY: "ViT-B/16"
     PATHWAYS: 1
 
   # ----------- IMPORTANT PART (Detection Mode) ----------
   STM:
+    QUERY_INIT_MODE: "learnable_anchors"
+    QUERY_INIT_SMALL_OBJECT_BIAS: True
+    # Optional decoder attention diagnostics (logs only, no optimization impact).
+    ATTN_TELEMETRY: False
+    ATTN_TELEMETRY_STAGEWISE: True
+    ATTN_TELEMETRY_COMPARE_NOMASK: False
+    IOF_TAU_MODE: "learned"
+    IOF_TAU_FIXED: 0.0
+    IOF_TAU_CLAMP_MIN: 0.0
+    IOF_TAU_CLAMP_MAX: 4.0
+
     TEMPORAL_POINTS: 1
 
     # convert action detection → object detection
@@ -27,6 +42,9 @@ MODEL:
     OBJECT_CLASSES: 6
     NUM_ACT: 6
     NUM_CLS: 6
+    # Optional severity regression head (per query).
+    PREDICT_SEVERITY: False
+    SEVERITY_WEIGHT: 1.0
 
 SOLVER:
   MAX_EPOCH: 1

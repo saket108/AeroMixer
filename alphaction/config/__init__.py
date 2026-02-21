@@ -64,7 +64,7 @@ def is_video_mode(config):
     Returns:
         bool: True if in video mode, False otherwise (always False now since video removed)
     """
-    return config.DATA.INPUT_TYPE == "video"
+    return False
 
 
 def get_text_config(config):
@@ -193,9 +193,12 @@ def validate_config(config):
     """
     errors = []
     
-    # Check input type
-    if config.DATA.INPUT_TYPE not in ['image', 'video']:
-        errors.append(f"Invalid INPUT_TYPE: {config.DATA.INPUT_TYPE}. Must be 'image' or 'video'.")
+    # Image-only validation
+    if config.DATA.INPUT_TYPE != 'image':
+        errors.append(
+            f"Invalid INPUT_TYPE: {config.DATA.INPUT_TYPE}. "
+            "This codebase currently supports image mode only ('image')."
+        )
     
     # Check NUM_FRAMES for image mode
     if config.DATA.INPUT_TYPE == 'image' and config.DATA.NUM_FRAMES != 1:

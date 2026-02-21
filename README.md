@@ -1,171 +1,261 @@
 # AeroMixer
 
-AeroMixer is a unified action/detection training pipeline for **images** and **videos**, with optional **open-vocabulary semantic labels** (text prompts per class).
+AeroMixer is currently an image-first detection training stack built around an STM-style query decoder.
 
-## Key Capabilities
+This README documents what the code does today.
 
-- Unified training and evaluation stack for image and video inputs.
-- Generic dataset support .
-- Open-vocabulary mode with closed/open class vocabularies.
-- CPU and GPU execution support for training and demo inference.
+## Current Status
 
-## Repository Structure
+- The active data path is image-only (`alphaction/dataset/build.py` always builds `ImageDataset`).
+- Training and evaluation are end-to-end: dataset -> model -> losses -> optimizer/scheduler -> checkpoint -> inference -> mAP.
+- Open-vocabulary plumbing exists (vocab loading, text encoder integration hooks), but the active STM path is detection-only (class + box losses).
+- Primary runtime entrypoints are image-only (`train_net.py`, `test_net.py`, `demo_image.py`, `trainval.sh`).
 
-- `alphaction/` - core model, dataset loaders, training, inference, utilities.
-- `config_files/images/aeromixer_images.yaml` - default image config.
-- `config_files/videos/aeromixer_videos.yaml` - default video config.
-- `preprocess/prepare_generic_video_dataset.py` - video-to-frames + split generation.
-- `preprocess/build_open_vocab.py` - build closed/open semantic vocab files.
-- `demo_image.py` / `demo.py` - single-image and video demo inference.
+## Model Overview
 
-## Installation
+Default detector (`MODEL.DET: STMDetector`) is:
 
-1. Create and activate your Python environment.
-2. Install PyTorch for your CUDA/CPU setup.
-3. Install project dependencies:
+1. Backbone (`alphaction/modeling/backbone/backbone.py`)
+2. STM decoder head (`alphaction/modeling/stm_decoder/stm_decoder.py`)
+3. DETR-style Hungarian assignment + set losses
+
+### High-level Forward (Image Mode)
+
+1. Input image batch is preprocessed and padded to `[B, C, H, W]`.
+2. Backbone outputs patch features (and optionally class/global features).
+3. `STMDetector` projects image features into `HIDDEN_DIM` using a lightweight conv projection block.
+4. Feature levels are built as:
+   - real `C3/C4/C5 -> FPN (P3/P4/P5/P6)` when backbone exposes intermediate maps
+   - resized single-map pyramid fallback for backbones without intermediate maps
+5. STM decoder runs multi-stage query refinement:
+   - query attention + IoF bias
+   - adaptive sampling/mixing
+   - class logits + box delta prediction
+6. Training returns weighted losses; eval returns normalized boxes + scores + labels.
+
+## Architecture Details
+
+### 1) Backbone Options
+
+Registered backbones include:
+
+- `ImageResNet-50`, `ImageResNet-101`, `ImageResNet-152`
+- `ImageResNet-Lite`
+- `ImageViT-B`, `ImageViT-L`, `ImageViT-H`
+- CLIP-family wrappers: `ViT-B/16`, `ViT-B/32`, `ViT-L/14`
+- CLIP-ViP: `ViP-B/16`, `ViP-B/32`
+- ViCLIP: `ViCLIP-L/14`
+
+The provided image config (`config_files/images/aeromixer_images.yaml`) uses `ViT-B/16` (better spatial detail than `ViT-B/32` for fine defects).
+
+### 2) Detector (`STMDetector`)
+
+Core behavior in image mode:
+
+- `is_image` when `DATA.INPUT_TYPE == "image"` (or `DATA.IMAGE_MODE`).
+- Backbone output is normalized into a feature tensor.
+- If temporal dim exists (`[B,C,T,H,W]`), it is averaged over `T`.
+- `img_proj`:
+  - `Conv2d(in_dim -> hidden_dim, 1x1)`
+  - `ReLU`
+  - `Conv2d(hidden_dim -> hidden_dim, 3x3, padding=1)`
+- Feature pyramid passed to decoder as 4 levels:
+  - preferred path (ResNet backbones): `C3/C4/C5 -> lateral 1x1 -> top-down fusion -> 3x3 output convs -> P3/P4/P5 + stride-2 P6`
+  - fallback path (other backbones): bilinear resized maps at `1x`, `1/2x`, `1/4x`, `1/8x` with per-level adapters
+  - each level is reshaped to `[B, C, 1, H, W]` for decoder compatibility
+- Optional text features resolved from:
+  - `extras["text_features"]`, or
+  - backbone `forward_text()` when `DATA.OPEN_VOCABULARY=True`
+
+### 3) STM Decoder (`STMDecoder`)
+
+Default STM hyperparameters (from `alphaction/config/defaults.py`):
+
+- `NUM_QUERIES=100`
+- `HIDDEN_DIM=256`
+- `NUM_STAGES=6`
+- `NUM_HEADS=8`
+- `SPATIAL_POINTS=32`
+- `TEMPORAL_POINTS=4` (temporal branch is disabled in image mode)
+
+Decoder internals:
+
+- Query init:
+  - learned spatial query embedding (`num_queries x hidden_dim`)
+  - temporal query embedding only for non-image branches
+- Box init:
+  - uses `extras["prior_boxes"]` if provided
+  - else CAM-based init if `extras["cams"]` exists
+  - else learnable anchor-like priors on a query grid (default)
+  - optional full-image fallback via `MODEL.STM.QUERY_INIT_MODE: "full_image"`
+  - optional small-object bias via `MODEL.STM.QUERY_INIT_SMALL_OBJECT_BIAS`
+- Stage update loop:
+  - self-attention with IoF-based attention bias
+  - adaptive sampling/mixing (via `SAMPLE4D` + `AdaptiveMixing`)
+  - classification head (`OBJECT_CLASSES + 1` with background)
+  - regression head (`4`-dim delta in `xyzr`)
+  - iterative box refinement (`refine_xyzr`)
+  - optional attention telemetry for stage-level quality analysis
+
+### 4) Active Heads and Outputs
+
+- Active supervised heads:
+  - object classification logits
+  - box regression
+- Optional supervised head:
+  - severity regression (`MODEL.STM.PREDICT_SEVERITY=True`)
+- Action/open-vocab classification in STM stage is not the active supervised path in current image flow.
+
+Train-time output:
+
+- loss dict with keys:
+  - `loss_ce`
+  - `loss_bbox`
+  - `loss_giou`
+  - plus stage-wise auxiliary losses when `MODEL.STM.INTERMEDIATE_SUPERVISION=True`:
+    - `loss_ce_0 ... loss_ce_{N-2}`
+    - `loss_bbox_0 ... loss_bbox_{N-2}`
+    - `loss_giou_0 ... loss_giou_{N-2}`
+  - when `MODEL.STM.ATTN_TELEMETRY=True`, extra logged metrics are also returned (not used for optimization), e.g.:
+    - `attn_entropy_avg`, `attn_diag_avg`, `attn_top1_avg`
+    - `attn_tau_mean_avg`, `attn_bias_mean_avg`
+    - `refine_l1_avg` and `refine_l1_s*` (stage-to-stage box delta magnitude)
+    - optional no-mask comparisons when `MODEL.STM.ATTN_TELEMETRY_COMPARE_NOMASK=True`
+    - stagewise keys like `attn_s0_entropy` when `MODEL.STM.ATTN_TELEMETRY_STAGEWISE=True`
+
+Eval-time output per image:
+
+- dict:
+  - `boxes`: normalized `xyxy` in `[0, 1]`
+  - `scores`: foreground score
+  - `labels`: predicted class index
+  - `severity`: optional per-box severity score in `[0, 1]` when severity head is enabled
+
+## Loss and Matching
+
+Matching is DETR-style Hungarian assignment:
+
+- cost = `cost_class * CE_term + cost_bbox * L1 + cost_giou * GIoU`
+- defaults:
+  - `OBJECT_WEIGHT=2.0`
+  - `L1_WEIGHT=2.0`
+  - `GIOU_WEIGHT=2.0`
+  - `BACKGROUND_WEIGHT=0.1`
+
+Criterion:
+
+- Classification: cross-entropy with background class.
+- Box loss: L1 + GIoU.
+- Stage-wise auxiliary supervision is enabled through `aux_outputs` (all decoder stages except the last).
+- Final scalar loss = weighted sum of all active keys in `weight_dict` (final stage + auxiliary stages).
+
+## Data Pipeline Details
+
+### 1) Supported Annotation Formats (`ImageDataset`)
+
+- TXT: `<image_rel> <x1> <y1> <x2> <y2> <class_id> [severity]`
+- YOLO folder layout (`images/...`, `labels/...`)
+- COCO JSON
+- Pascal VOC XML
+
+Selection is via:
+
+- `DATA.ANNOTATION_FORMAT` in `{auto, txt, yolo, coco, voc}`
+
+### 2) Preprocessing
+
+`PreprocessWithBoxes` does:
+
+- resize using train/test scale config
+- optional horizontal flip
+- channel conversion (BGR/RGB by config)
+- mean/std normalization
+- outputs tensor as `C x T x H x W` (`T=1` in image mode)
+
+### 3) Batch Contract
+
+Collated batch from `BatchCollator`:
+
+- `primary_inputs`: padded tensor `[B, C, H, W]` (or `[B, C, T, H, W]` if needed)
+- `secondary_inputs`: `None` in current image path
+- `whwh`: tensor `[B, 4]`
+- `boxes`: list of tensors `[Ni, 4]`
+- `labels`: list of tensors
+- `metadata`: list of dicts
+- `indices`: list of sample ids
+
+## Training Loop Details
+
+`train_net.py` + `alphaction/engine/trainer.py`:
+
+- builds model, optimizer, LR scheduler, checkpoint manager
+- optional checkpoint load/transfer
+- forward -> summed losses -> backward
+- gradient clipping: max norm `5.0`
+- optimizer step every iteration
+- scheduler step every 10 iterations
+- periodic checkpoint save + final checkpoint
+- optional validation/test inference pass
+
+Checkpoints are stored under:
+
+- `<OUTPUT_DIR>/checkpoints/*.pth`
+
+## Inference and Evaluation
+
+`test_net.py` + `alphaction/engine/inference.py`:
+
+- runs model in eval mode
+- normalizes outputs to a unified `(boxes, scores_matrix)` form
+- calls dataset evaluation (`image_ap` / `frame_ap` alias path)
+- Pascal-style frame mAP backend (`IOU_THRESH` from config)
+
+Output artifacts:
+
+- inference logs/results under `<OUTPUT_DIR>/inference/...`
+
+## Open-Vocabulary and Text Path
+
+Available hooks:
+
+- vocab loading from `IMAGES.VOCAB_FILE` / `IMAGES.VOCAB_OPEN_FILE`
+- text prompt materialization in `ImageDataset`
+- text encoder vocabulary injection via:
+  - `model.backbone.text_encoder.set_vocabulary(...)`
+- optional text feature passing through `extras`
+
+Utility script:
+
+```bash
+python preprocess/build_open_vocab.py \
+  --annotations data/aircraft/train.txt data/aircraft/test.txt \
+  --out-closed data/aircraft/annotations/vocab_closed.json \
+  --out-open data/aircraft/annotations/vocab_open.json \
+  --closed-ratio 0.8 \
+  --prompt-template "a photo of {label}"
+```
+
+## Running the Project
+
+Install:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Configuration Entry Points
-
-- Image pipeline: `config_files/images/aeromixer_images.yaml`
-- Video pipeline: `config_files/videos/aeromixer_videos.yaml`
-
-Core fields you typically update:
-
-- `DATA.PATH_TO_DATA_DIR`
-- `DATA.FRAME_DIR`
-- `MODEL.WEIGHT` (for evaluation/demo)
-- `SOLVER.MAX_EPOCH`
-- `OUTPUT_DIR`
-
-## Dataset Support
-
-### Image Mode (`DATA.INPUT_TYPE: "image"`)
-
-`ImageDataset` supports:
-
-- Plain TXT: `<image_rel_path> <x1> <y1> <x2> <y2> <class_id>`
-- YOLO-style folder layout (`images/...`, `labels/...`)
-- COCO JSON
-- Pascal VOC XML
-
-### Video Mode (`DATA.INPUT_TYPE: "video"`)
-
-Expected frame layout:
-
-```text
-<PATH_TO_DATA_DIR>/<FRAME_DIR>/<video_id>/<frame_files>
-```
-
-Split TXT format:
-
-```text
-<video_id> <frame_id> <x1> <y1> <x2> <y2> <class_id_or_name>
-```
-
-## Prepare a Generic Video Dataset
-
-### A) Quick smoke-test data (placeholder boxes)
-
-```bash
-python preprocess/prepare_generic_video_dataset.py \
-  --videos-dir data/raw_videos \
-  --output-root data/Videos \
-  --split all \
-  --train-ratio 0.8 \
-  --recursive
-```
-
-### B) Real annotations from JSON
-
-Single JSON with split labels:
-
-```bash
-python preprocess/prepare_generic_video_dataset.py \
-  --videos-dir data/raw_videos \
-  --output-root data/Videos \
-  --split all \
-  --annotation-json data/annotations/all.json \
-  --bbox-format auto \
-  --recursive
-```
-
-Per-split JSON:
-
-```bash
-python preprocess/prepare_generic_video_dataset.py \
-  --videos-dir data/raw_videos \
-  --output-root data/Videos \
-  --split all \
-  --annotation-json data/annotations/{split}.json \
-  --bbox-format auto \
-  --recursive
-```
-
-Generated outputs:
-
-- `data/Videos/frames/<video_id>/<frame_id>.jpg`
-- `data/Videos/train.txt` and/or `data/Videos/test.txt`
-- `data/Videos/annotations/video_id_map.json`
-
-## Open-Vocabulary Semantic Labels
-
-Build closed/open vocab files from your existing annotations:
-
-```bash
-python preprocess/build_open_vocab.py \
-  --annotations data/Videos/train.txt data/Videos/test.txt \
-  --out-closed data/Videos/annotations/vocab_closed.json \
-  --out-open data/Videos/annotations/vocab_open.json \
-  --closed-ratio 0.8 \
-  --prompt-template "a person is {label}"
-```
-
-Enable in config:
-
-```yaml
-DATA:
-  OPEN_VOCABULARY: True
-  VOCAB_FILE: "annotations/vocab_closed.json"
-  VOCAB_OPEN_FILE: "annotations/vocab_open.json"
-TEST:
-  EVAL_OPEN: True
-```
-
-- `VOCAB_FILE`: classes used for training (closed set)
-- `VOCAB_OPEN_FILE`: classes used during open-set evaluation
-
-## Train and Evaluate
-
-### Image
+Train:
 
 ```bash
 python train_net.py --config-file config_files/images/aeromixer_images.yaml
+```
+
+Eval:
+
+```bash
 python test_net.py --config-file config_files/images/aeromixer_images.yaml
 ```
 
-### Video
-
-```bash
-python train_net.py --config-file config_files/videos/aeromixer_videos.yaml
-python test_net.py --config-file config_files/videos/aeromixer_videos.yaml
-```
-
-### Optional helper script (Bash)
-
-```bash
-bash trainval.sh train images
-bash trainval.sh eval images checkpoints/model_final.pth
-bash trainval.sh train videos
-bash trainval.sh eval videos checkpoints/model_final.pth
-```
-
-## Demo Inference
-
-### Image
+Image demo:
 
 ```bash
 python demo_image.py \
@@ -175,35 +265,67 @@ python demo_image.py \
   --device cpu
 ```
 
-### Video
+## Configuration Cheat Sheet
+
+Most important fields to tune:
+
+- `DATA.PATH_TO_DATA_DIR`
+- `DATA.FRAME_DIR`
+- `DATA.ANNOTATION_FORMAT`
+- `DATA.OPEN_VOCABULARY`
+- `MODEL.BACKBONE.CONV_BODY`
+- `MODEL.STM.OBJECT_CLASSES`
+- `MODEL.STM.NUM_QUERIES`
+- `MODEL.STM.NUM_STAGES`
+- `MODEL.STM.QUERY_INIT_MODE`
+- `MODEL.STM.QUERY_INIT_BASE_SCALE`
+- `MODEL.STM.QUERY_INIT_SMALL_OBJECT_BIAS`
+- `MODEL.STM.ATTN_TELEMETRY`
+- `MODEL.STM.ATTN_TELEMETRY_STAGEWISE`
+- `MODEL.STM.ATTN_TELEMETRY_COMPARE_NOMASK`
+- `MODEL.STM.IOF_TAU_MODE`
+- `MODEL.STM.IOF_TAU_FIXED`
+- `MODEL.STM.IOF_TAU_CLAMP_MIN`
+- `MODEL.STM.IOF_TAU_CLAMP_MAX`
+- `MODEL.STM.PREDICT_SEVERITY`
+- `MODEL.STM.SEVERITY_WEIGHT`
+- `SOLVER.BASE_LR`
+- `SOLVER.MAX_EPOCH`
+- `SOLVER.IMAGES_PER_BATCH`
+- `TEST.IOU_THRESH`
+- `OUTPUT_DIR`
+
+## Known Limitations
+
+- Active training/eval data path is image-only.
+- `demo_image.py` is a utility path and may need adaptation depending on detector output shape changes.
+
+## Quality Checks
 
 ```bash
-python demo.py \
-  --config-file config_files/videos/aeromixer_videos.yaml \
-  --video path/to/input.mp4 \
-  --output output/video_demo.mp4 \
-  --device cpu
-```
-
-Use `--device cuda` when GPU is available.
-
-## Troubleshooting
-
-- Missing import warnings in IDE (for example `yacs`, `fvcore`, `einops`, `supervision`, `imageio`, `tensorboardX`) usually mean the current Python environment does not have all dependencies installed.
-- If running on Windows without Bash, use direct `python ...` commands instead of `trainval.sh`.
-- If open-vocabulary evaluation fails, verify class labels in your annotations match labels in vocab files.
-
-## Quality Gates
-
-Run local smoke checks:
-
-```bash
-python -m compileall alphaction preprocess demo.py demo_image.py train_net.py test_net.py
+python -m compileall alphaction preprocess demo_image.py train_net.py test_net.py
 python -m unittest discover -s tests -v
 ```
 
-A GitHub Actions workflow is included at `.github/workflows/ci.yml` and runs on every push/PR.
+## Attention Ablation Runner
+
+Run baseline/zero/clamp IoF tau experiments on a fixed 5% subset:
+
+```bash
+python scripts/run_iof_tau_ablation.py \
+  --config-file config_files/images/aeromixer_images.yaml \
+  --subset-ratio 0.05 \
+  --epochs 20 \
+  --seed 2 \
+  --clamp-values 0.5,1.0,2.0
+```
+
+The script writes `ablation_summary.csv` under `outputs/iof_tau_ablation/` with:
+
+- `attn_entropy_avg`, `attn_diag_avg`, `attn_tau_mean_avg`, `refine_l1_avg`
+- `mAP@0.5`
+- `SmallObject/AP@0.5`
 
 ## License
 
-This project is released under the terms in `LICENSE`.
+See `LICENSE`.

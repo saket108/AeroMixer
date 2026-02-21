@@ -1,5 +1,7 @@
 import datetime
+import json
 import logging
+import os
 import time
 import torch
 import torch.nn as nn
@@ -79,7 +81,10 @@ def do_train(
         # ----------------------------------------------------
         extras = _build_model_extras(metadata, labels)
         loss_dict = model(primary_inputs, secondary_inputs, whwh, boxes, labels, extras)
-        losses = sum(loss_dict.values())
+        optim_loss_terms = [value for key, value in loss_dict.items() if str(key).startswith("loss")]
+        if not optim_loss_terms:
+            raise RuntimeError("Model returned no optimization losses (keys starting with 'loss').")
+        losses = sum(optim_loss_terms)
 
         # ----------------------------------------------------
         # Backprop
@@ -108,13 +113,17 @@ def do_train(
         eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
 
         if iteration % 20 == 0 or iteration == max_iter:
+            log_fields = [
+                f"eta: {eta_string}",
+                f"iter: {iteration}/{max_iter}",
+                f"loss: {meters.total_loss.avg:.4f}",
+                f"lr: {optimizer.param_groups[0]['lr']:.6f}",
+            ]
+            for key in ["attn_entropy_avg", "attn_diag_avg", "attn_tau_mean_avg", "refine_l1_avg"]:
+                if key in meters.meters:
+                    log_fields.append(f"{key}: {meters.meters[key].avg:.4f}")
             logger.info(
-                meters.delimiter.join([
-                    f"eta: {eta_string}",
-                    f"iter: {iteration}/{max_iter}",
-                    f"loss: {meters.total_loss.avg:.4f}",
-                    f"lr: {optimizer.param_groups[0]['lr']:.6f}",
-                ])
+                meters.delimiter.join(log_fields)
             )
 
         # ----------------------------------------------------
@@ -136,3 +145,11 @@ def do_train(
             total_training_time / max_iter,
         )
     )
+
+    summary_path = os.path.join(output_folder, "train_metrics_final.json")
+    summary = {name: meter.global_avg for name, meter in meters.meters.items()}
+    summary["max_iter"] = int(max_iter)
+    summary["final_iteration"] = int(arguments.get("iteration", max_iter))
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
+    logger.info(f"Saved training metric summary to {summary_path}")

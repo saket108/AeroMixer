@@ -43,6 +43,11 @@ class ImageResNet(nn.Module):
         self.num_pathways = 1
         self.dim_out = int(net.fc.in_features)
         self.dim_embed = self.dim_out
+        self.pyramid_channels = [
+            int(self.layer2[-1].conv3.out_channels),
+            int(self.layer3[-1].conv3.out_channels),
+            int(self.layer4[-1].conv3.out_channels),
+        ]
 
     def _prepare_input(self, x):
         if isinstance(x, (list, tuple)):
@@ -58,18 +63,23 @@ class ImageResNet(nn.Module):
             raise ValueError(f"ImageResNet expects 4D input after preprocessing, got shape={tuple(x.shape)}")
         return x
 
-    def forward(self, x):
+    def forward_multiscale(self, x):
         x = self._prepare_input(x)
 
         x = self.stem(x)
         x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        patch_feat = self.layer4(x)
+        c3 = self.layer2(x)
+        c4 = self.layer3(c3)
+        c5 = self.layer4(c4)
 
-        cls_feat = self.avgpool(patch_feat)
+        cls_feat = self.avgpool(c5)
         cls_feat = torch.flatten(cls_feat, 1)
 
+        return (c3, c4, c5), cls_feat
+
+    def forward(self, x):
+        multiscale_feats, cls_feat = self.forward_multiscale(x)
+        patch_feat = multiscale_feats[2]
         return patch_feat, cls_feat
 
 
@@ -91,6 +101,7 @@ class ImageResNetLite(nn.Module):
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.dim_out = 512
         self.dim_embed = 512
+        self.pyramid_channels = [128, 256, 512]
 
     def _make_block(self, in_ch, out_ch, stride=1):
         return nn.Sequential(
@@ -115,14 +126,19 @@ class ImageResNetLite(nn.Module):
             raise ValueError(f"ImageResNetLite expects 4D input after preprocessing, got shape={tuple(x.shape)}")
         return x
 
-    def forward(self, x):
+    def forward_multiscale(self, x):
         x = self._prepare_input(x)
 
         x = self.relu(self.bn1(self.conv1(x)))
-        x = self.block2(x)
-        x = self.block3(x)
-        patch_feat = self.block4(x)
+        c3 = self.block2(x)
+        c4 = self.block3(c3)
+        c5 = self.block4(c4)
 
-        cls_feat = self.avgpool(patch_feat)
+        cls_feat = self.avgpool(c5)
         cls_feat = torch.flatten(cls_feat, 1)
+        return (c3, c4, c5), cls_feat
+
+    def forward(self, x):
+        multiscale_feats, cls_feat = self.forward_multiscale(x)
+        patch_feat = multiscale_feats[2]
         return patch_feat, cls_feat

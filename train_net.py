@@ -66,7 +66,15 @@ def train(cfg, local_rank, distributed, tblogger=None, transfer_weight=False, ad
     )
 
     scheduler = make_lr_scheduler(cfg, optimizer, iter_per_epoch)
-    checkpointer = ActionCheckpointer(cfg, model, optimizer, scheduler, output_dir, save_to_disk, topk=1)
+    checkpointer = ActionCheckpointer(
+        cfg,
+        model,
+        optimizer,
+        scheduler,
+        output_dir,
+        save_to_disk,
+        topk=int(getattr(cfg.SOLVER, "CHECKPOINT_TOPK", 1)),
+    )
     ckpt_file = os.path.join(output_dir, cfg.MODEL.WEIGHT) if cfg.MODEL.WEIGHT else None
     extra_checkpoint_data = checkpointer.load(ckpt_file, model_weight_only=transfer_weight,
                                               adjust_scheduler=adjust_lr, no_head=no_head)

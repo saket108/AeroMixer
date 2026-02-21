@@ -1,5 +1,5 @@
 """
-STM Detector for image/video multimodal models.
+STM Detector for image multimodal models.
 """
 
 from torch import nn
@@ -53,9 +53,42 @@ class STMDetector(nn.Module):
             in_dim = int(getattr(self.backbone, "dim_embed", hidden_dim))
             self.img_proj = nn.Sequential(
                 nn.Conv2d(in_dim, hidden_dim, 1),
-                nn.ReLU(),
+                nn.ReLU(inplace=True),
                 nn.Conv2d(hidden_dim, hidden_dim, 3, padding=1),
             )
+            self.pyramid_scales = (1, 2, 4, 8)
+            self.pyramid_adapters = nn.ModuleList(
+                [
+                    nn.Sequential(
+                        nn.Conv2d(hidden_dim, hidden_dim, 3, padding=1),
+                        nn.ReLU(inplace=True),
+                    )
+                    for _ in self.pyramid_scales
+                ]
+            )
+            self.use_backbone_fpn = False
+            pyramid_channels = getattr(self.backbone, "pyramid_channels", None)
+            if isinstance(pyramid_channels, (list, tuple)) and len(pyramid_channels) >= 3:
+                c3_ch, c4_ch, c5_ch = [int(ch) for ch in pyramid_channels[-3:]]
+                self.use_backbone_fpn = True
+                self.fpn_lateral = nn.ModuleList(
+                    [
+                        nn.Conv2d(c3_ch, hidden_dim, kernel_size=1),
+                        nn.Conv2d(c4_ch, hidden_dim, kernel_size=1),
+                        nn.Conv2d(c5_ch, hidden_dim, kernel_size=1),
+                    ]
+                )
+                self.fpn_output = nn.ModuleList(
+                    [
+                        nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+                        nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+                        nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+                    ]
+                )
+                self.fpn_extra = nn.Sequential(
+                    nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, stride=2, padding=1),
+                    nn.ReLU(inplace=True),
+                )
 
         print(">>>> STMDetector running in", "IMAGE MODE" if self.is_image else "VIDEO MODE")
 
@@ -168,37 +201,101 @@ class STMDetector(nn.Module):
                     return tensor
         return None
 
+    def _to_image_feature(self, feat):
+        if feat is None:
+            return None
+        if feat.dim() == 5:
+            return feat.mean(dim=2)
+        if feat.dim() != 4:
+            raise ValueError(f"Expected 4D/5D feature map, got shape={tuple(feat.shape)}")
+        return feat
+
+    def _build_image_pyramid(self, feats):
+        if feats.dim() != 4:
+            raise ValueError(f"Expected 4D feature map for pyramid, got shape={tuple(feats.shape)}")
+
+        h, w = feats.shape[-2:]
+        pyramid = []
+        for scale, adapter in zip(self.pyramid_scales, self.pyramid_adapters):
+            target_h = max(1, h // scale)
+            target_w = max(1, w // scale)
+            if target_h == h and target_w == w:
+                level = feats
+            else:
+                level = F.interpolate(
+                    feats,
+                    size=(target_h, target_w),
+                    mode="bilinear",
+                    align_corners=False,
+                )
+            level = adapter(level)
+            pyramid.append(level.unsqueeze(2))
+        return pyramid
+
+    def _build_backbone_fpn(self, multiscale_feats):
+        if not isinstance(multiscale_feats, (list, tuple)) or len(multiscale_feats) < 3:
+            raise ValueError("Expected at least three feature levels for FPN.")
+
+        c3 = self._to_image_feature(multiscale_feats[-3])
+        c4 = self._to_image_feature(multiscale_feats[-2])
+        c5 = self._to_image_feature(multiscale_feats[-1])
+
+        l3 = self.fpn_lateral[0](c3)
+        l4 = self.fpn_lateral[1](c4)
+        l5 = self.fpn_lateral[2](c5)
+
+        p5 = l5
+        p4 = l4 + F.interpolate(p5, size=l4.shape[-2:], mode="nearest")
+        p3 = l3 + F.interpolate(p4, size=l3.shape[-2:], mode="nearest")
+
+        p3 = self.fpn_output[0](p3)
+        p4 = self.fpn_output[1](p4)
+        p5 = self.fpn_output[2](p5)
+        p6 = self.fpn_extra(p5)
+
+        return [p3.unsqueeze(2), p4.unsqueeze(2), p5.unsqueeze(2), p6.unsqueeze(2)]
+
     # --------------------------------------------------------
     # IMAGE FORWARD
     # --------------------------------------------------------
     def forward_image(self, primary_inputs, whwh, boxes=None, labels=None, extras=None):
         extras = self._merge_extras(extras, labels=labels)
 
-        backbone_out = self.backbone([primary_inputs])
         cls_feat = None
         patch_feat = None
+        multiscale_feats = None
 
-        if isinstance(backbone_out, (list, tuple)):
-            patch_feat = backbone_out[0]
-            if len(backbone_out) > 1 and torch.is_tensor(backbone_out[1]):
-                cls_feat = backbone_out[1]
+        if self.use_backbone_fpn and hasattr(self.backbone, "forward_multiscale"):
+            backbone_out = self.backbone.forward_multiscale([primary_inputs])
+            if isinstance(backbone_out, (list, tuple)) and len(backbone_out) >= 1:
+                multiscale_feats = backbone_out[0]
+                if isinstance(backbone_out, (list, tuple)) and len(backbone_out) > 1 and torch.is_tensor(backbone_out[1]):
+                    cls_feat = backbone_out[1]
+                if isinstance(multiscale_feats, (list, tuple)) and len(multiscale_feats) > 0:
+                    patch_feat = multiscale_feats[-1]
+
+        if patch_feat is None:
+            backbone_out = self.backbone([primary_inputs])
+            if isinstance(backbone_out, (list, tuple)):
+                patch_feat = backbone_out[0]
+                if len(backbone_out) > 1 and torch.is_tensor(backbone_out[1]):
+                    cls_feat = backbone_out[1]
+            else:
+                patch_feat = backbone_out
+
+        if self.use_backbone_fpn and multiscale_feats is not None:
+            mapped_features = self._build_backbone_fpn(multiscale_feats)
+            feature_dtype = mapped_features[0].dtype
         else:
-            patch_feat = backbone_out
+            feats = self._pick_feature_tensor(patch_feat)
+            if feats is None:
+                raise RuntimeError("STMDetector could not extract a tensor feature map from backbone output.")
+            feats = self._to_image_feature(feats)
+            feats = self.img_proj(feats)
+            mapped_features = self._build_image_pyramid(feats)
+            feature_dtype = feats.dtype
 
-        feats = self._pick_feature_tensor(patch_feat)
-        if feats is None:
-            raise RuntimeError("STMDetector could not extract a tensor feature map from backbone output.")
-
-        # Remove temporal dim if it exists.
-        if feats.dim() == 5:
-            feats = feats.mean(dim=2)
-
-        feats = self.img_proj(feats)
-
-        # Fake multi-scale list for decoder compatibility.
-        mapped_features = [feats.unsqueeze(2)] * 4
-
-        text_features = self._resolve_text_features(extras, device=primary_inputs.device, dtype=feats.dtype)
+        text_features = self._resolve_text_features(extras, device=primary_inputs.device, dtype=feature_dtype)
 
         return self.stm_head(
             mapped_features,
@@ -214,40 +311,17 @@ class STMDetector(nn.Module):
         )
 
     # --------------------------------------------------------
-    # VIDEO FORWARD
-    # --------------------------------------------------------
-    def forward_video(self, primary_inputs, secondary_inputs, whwh, boxes, labels, extras):
-        extras = self._merge_extras(extras, labels=labels)
-
-        if self.backbone.num_pathways == 1:
-            features = self.backbone([primary_inputs])
-        else:
-            features = self.backbone([primary_inputs, secondary_inputs])
-
-        text_features = self._resolve_text_features(extras, device=primary_inputs.device, dtype=primary_inputs.dtype)
-
-        return self.stm_head(
-            features,
-            whwh,
-            gt_boxes=boxes,
-            labels=labels,
-            text_features=text_features,
-            tau_inv=100,
-            cls_feat=None,
-            patch_feat=None,
-            text_token_feats=None,
-            extras=extras,
-        )
-
-    # --------------------------------------------------------
     # UNIVERSAL FORWARD
     # --------------------------------------------------------
     def forward(self, primary_inputs, secondary_inputs, whwh,
                 boxes=None, labels=None, extras=None, part_forward=-1):
 
-        if self.is_image:
-            return self.forward_image(primary_inputs, whwh, boxes, labels, extras)
-        return self.forward_video(primary_inputs, secondary_inputs, whwh, boxes, labels, extras)
+        if not self.is_image:
+            raise RuntimeError(
+                "STMDetector currently supports image mode only. "
+                "Set DATA.INPUT_TYPE='image'."
+            )
+        return self.forward_image(primary_inputs, whwh, boxes, labels, extras)
 
 
 def build_detection_model(cfg):

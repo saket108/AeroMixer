@@ -186,6 +186,8 @@ class MultiheadAttention(nn.Module):
                 key_pos=None,
                 attn_mask=None,
                 key_padding_mask=None,
+                return_attn_weights=False,
+                average_attn_weights=None,
                 **kwargs):
         """Forward function for `MultiheadAttention`.
 
@@ -261,12 +263,38 @@ class MultiheadAttention(nn.Module):
         key_in = self.ln_kv(key) if self.use_ln else key
         value_in = self.ln_kv(value) if self.use_ln else value
             
-        out = self.attn(
-            query=query_in,
-            key=key_in,
-            value=value_in,
-            attn_mask=attn_mask,
-            key_padding_mask=key_padding_mask)[0]
+        if return_attn_weights:
+            if average_attn_weights is None:
+                average_attn_weights = False
+            try:
+                out, attn_weights = self.attn(
+                    query=query_in,
+                    key=key_in,
+                    value=value_in,
+                    attn_mask=attn_mask,
+                    key_padding_mask=key_padding_mask,
+                    need_weights=True,
+                    average_attn_weights=average_attn_weights,
+                )
+            except TypeError:
+                out, attn_weights = self.attn(
+                    query=query_in,
+                    key=key_in,
+                    value=value_in,
+                    attn_mask=attn_mask,
+                    key_padding_mask=key_padding_mask,
+                    need_weights=True,
+                )
+        else:
+            out = self.attn(
+                query=query_in,
+                key=key_in,
+                value=value_in,
+                attn_mask=attn_mask,
+                key_padding_mask=key_padding_mask,
+                need_weights=False,
+            )[0]
+            attn_weights = None
 
         if self.batch_first:
             out = out.transpose(0, 1)
@@ -282,12 +310,20 @@ class MultiheadAttention(nn.Module):
                 factors = torch.FloatTensor(1, key.size(0), 1).fill_(expectation).to(out.device)
             factors = factors.repeat(identity.size(0), 1, 1)
             out = factors * identity + (1.0 - factors) * out
+            if return_attn_weights:
+                return out, attn_weights
             return out
 
         if self.fuse_coeff > 0 and self.fuse_coeff < 1:
-            return self.fuse_coeff * identity + (1 - self.fuse_coeff) * out
+            out = self.fuse_coeff * identity + (1 - self.fuse_coeff) * out
+            if return_attn_weights:
+                return out, attn_weights
+            return out
         
-        return identity + out
+        out = identity + out
+        if return_attn_weights:
+            return out, attn_weights
+        return out
 
 
 class FFN(nn.Module):
