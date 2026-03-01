@@ -20,7 +20,7 @@ _C.DATA.IMAGE_MODE = True
 # Relative frame/image directory under PATH_TO_DATA_DIR.
 _C.DATA.FRAME_DIR = ""
 
-# Annotation backend for image datasets: auto|txt|yolo|coco|voc
+# Annotation backend for image datasets: auto|txt|yolo|coco|voc|custom_json
 _C.DATA.ANNOTATION_FORMAT = "auto"
 
 # The number of frames of the input clip.

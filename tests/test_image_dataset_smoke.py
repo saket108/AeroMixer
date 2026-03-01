@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+import json
 
 import cv2
 import numpy as np
@@ -78,6 +79,75 @@ class TestImageDatasetSmoke(unittest.TestCase):
             _, _, _, _, _, extras, _ = dataset[0]
             self.assertIn("severity", extras)
             self.assertAlmostEqual(float(extras["severity"][0]), 0.75, places=6)
+
+    def test_load_custom_nested_json_with_severity_and_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            image_dir = root / "images"
+            image_dir.mkdir(parents=True, exist_ok=True)
+
+            image = np.zeros((64, 64, 3), dtype=np.uint8)
+            image_path = image_dir / "sample.jpg"
+            ok = cv2.imwrite(str(image_path), image)
+            self.assertTrue(ok)
+
+            custom_data = {
+                "images": [
+                    {
+                        "image_id": "img_0001",
+                        "file_name": "sample.jpg",
+                        "split": "train",
+                        "annotations": [
+                            {
+                                "annotation_id": "img_0001_1",
+                                "category_id": 1,
+                                "category_name": "dent",
+                                "bounding_box_normalized": {
+                                    "x_center": 0.5,
+                                    "y_center": 0.5,
+                                    "width": 0.5,
+                                    "height": 0.5,
+                                },
+                                "damage_metrics": {
+                                    "raw_severity_score": 0.33,
+                                },
+                                "risk_assessment": {
+                                    "severity_level": "low",
+                                    "requires_manual_validation": True,
+                                },
+                                "description": "Sample defect description",
+                            }
+                        ],
+                    }
+                ]
+            }
+            (root / "train.json").write_text(json.dumps(custom_data, indent=2), encoding="utf-8")
+
+            cfg = global_cfg.clone()
+            cfg.defrost()
+            cfg.DATA.INPUT_TYPE = "image"
+            cfg.DATA.PATH_TO_DATA_DIR = str(root)
+            cfg.DATA.FRAME_DIR = "images"
+            cfg.DATA.NUM_FRAMES = 1
+            cfg.DATA.SAMPLING_RATE = 1
+            cfg.DATA.ANNOTATION_FORMAT = "custom_json"
+            cfg.DATA.OPEN_VOCABULARY = False
+            cfg.MODEL.BACKBONE.PATHWAYS = 1
+            cfg.TEST.EVAL_OPEN = False
+            cfg.freeze()
+
+            dataset = ImageDataset(cfg, split="train")
+            self.assertEqual(len(dataset), 1)
+
+            _, _, _, boxes, labels, extras, _ = dataset[0]
+            self.assertEqual(boxes.shape[1], 4)
+            self.assertEqual(labels.shape[0], 1)
+            self.assertIn("severity", extras)
+            self.assertAlmostEqual(float(extras["severity"][0]), 0.33, places=6)
+            self.assertIn("annotation_extras", extras)
+            self.assertEqual(len(extras["annotation_extras"]), 1)
+            self.assertEqual(extras["annotation_extras"][0]["description"], "Sample defect description")
+            self.assertEqual(extras["annotation_extras"][0]["category_name"], "dent")
 
 
 if __name__ == "__main__":

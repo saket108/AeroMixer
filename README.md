@@ -157,10 +157,14 @@ Criterion:
 - YOLO folder layout (`images/...`, `labels/...`)
 - COCO JSON
 - Pascal VOC XML
+- Custom nested JSON (`images[].annotations[]`) with normalized boxes:
+  - `bounding_box_normalized.{x_center,y_center,width,height}`
+  - optional `damage_metrics.raw_severity_score`
+  - optional passthrough fields in metadata (`risk_assessment`, `damage_metrics`, `description`)
 
 Selection is via:
 
-- `DATA.ANNOTATION_FORMAT` in `{auto, txt, yolo, coco, voc}`
+- `DATA.ANNOTATION_FORMAT` in `{auto, txt, yolo, coco, voc, custom_json}`
 
 ### 2) Preprocessing
 

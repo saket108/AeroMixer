@@ -14,6 +14,26 @@ Supports multiple detection annotation formats:
    <PATH_TO_DATA_DIR>/annotations/instances_{train|val}.json (or similar)
 4) Pascal VOC:
    <VOC_ROOT>/Annotations/*.xml, <VOC_ROOT>/JPEGImages/*, and ImageSets/Main/*.txt
+5) Custom nested JSON:
+   {
+     "images": [
+       {
+         "image_id": "...",
+         "file_name": "...jpg",
+         "split": "train|valid|test",
+         "annotations": [
+           {
+             "category_id": 1,
+             "category_name": "dent",
+             "bounding_box_normalized": {"x_center": ..., "y_center": ..., "width": ..., "height": ...},
+             "damage_metrics": {"raw_severity_score": ...},
+             "risk_assessment": {...},
+             "description": "..."
+           }
+         ]
+       }
+     ]
+   }
 
 Multimodal (Image + Text) Support:
 - Open vocabulary detection with text prompts
@@ -86,7 +106,7 @@ class ImageDataset(torch.utils.data.Dataset):
             else:
                 raise AssertionError(f"Image dir not found: {self.image_dir}")
 
-        self.annotation_mode, samples, classes_set, class_name_map = self._load_annotations(split)
+        self.annotation_mode, samples, classes_set, class_name_map, sample_extras_map = self._load_annotations(split)
         self.image_list = sorted(list(samples.keys()))
         self.annos = {}
         for image_rel_path, entries in samples.items():
@@ -127,7 +147,16 @@ class ImageDataset(torch.utils.data.Dataset):
             severities = None
             if len(ann) and ann.shape[1] > 5:
                 severities = ann[:, 5].astype(np.float32)
-            self.samples.append({"image_rel": img_rel, "boxes": boxes, "labels": labels, "severity": severities})
+            sample_extras = sample_extras_map.get(img_rel, None) if isinstance(sample_extras_map, dict) else None
+            self.samples.append(
+                {
+                    "image_rel": img_rel,
+                    "boxes": boxes,
+                    "labels": labels,
+                    "severity": severities,
+                    "annotation_extras": sample_extras,
+                }
+            )
 
         logger.info(
             f"Loaded ImageDataset(split={split}, mode={self.annotation_mode}, multimodal={self.multimodal}) with {len(self.samples)} images and "
@@ -233,6 +262,8 @@ class ImageDataset(torch.utils.data.Dataset):
         )
         if sample.get("severity", None) is not None:
             result["severity"] = sample["severity"]
+        if sample.get("annotation_extras", None) is not None:
+            result["annotation_extras"] = sample["annotation_extras"]
         
         # Add multimodal information if enabled
         if self.multimodal:
@@ -287,6 +318,8 @@ class ImageDataset(torch.utils.data.Dataset):
         extras = {"extra_boxes": None, "image_rel": img_rel, "sample_id": index}
         if sample.get("severity", None) is not None:
             extras["severity"] = sample["severity"].astype(np.float32)
+        if sample.get("annotation_extras", None) is not None:
+            extras["annotation_extras"] = sample["annotation_extras"]
 
         boxes_out = boxes_proc if boxes_proc is None else boxes_proc.astype(np.float32)
         
@@ -312,23 +345,24 @@ class ImageDataset(torch.utils.data.Dataset):
             "yolo": lambda: self._load_yolo_annotations(split),
             "coco": lambda: self._load_coco_annotations(split),
             "voc": lambda: self._load_voc_annotations(split),
+            "custom_json": lambda: self._load_custom_json_annotations(split),
         }
 
         if self.annotation_format in loaders:
-            samples, classes_set, class_name_map = loaders[self.annotation_format]()
-            return self.annotation_format, samples, classes_set, class_name_map
+            samples, classes_set, class_name_map, sample_extras_map = loaders[self.annotation_format]()
+            return self.annotation_format, samples, classes_set, class_name_map, sample_extras_map
 
         if self.annotation_format != "auto":
             raise ValueError(
                 f"Unsupported DATA.ANNOTATION_FORMAT='{self.annotation_format}'. "
-                "Use one of: auto, txt, yolo, coco, voc."
+                "Use one of: auto, txt, yolo, coco, voc, custom_json."
             )
 
         errors = []
-        for format_name in ["txt", "yolo", "coco", "voc"]:
+        for format_name in ["txt", "yolo", "coco", "voc", "custom_json"]:
             try:
-                samples, classes_set, class_name_map = loaders[format_name]()
-                return format_name, samples, classes_set, class_name_map
+                samples, classes_set, class_name_map, sample_extras_map = loaders[format_name]()
+                return format_name, samples, classes_set, class_name_map, sample_extras_map
             except Exception as exc:
                 errors.append(f"{format_name}: {exc}")
 
@@ -366,7 +400,7 @@ class ImageDataset(torch.utils.data.Dataset):
                 classes_set.add(cls)
         if len(samples) == 0:
             raise AssertionError(f"No valid annotations found in {ann_file}")
-        return samples, classes_set, {}
+        return samples, classes_set, {}, {}
 
     def _load_yolo_annotations(self, split):
         split_aliases = self._split_aliases(split)
@@ -442,7 +476,7 @@ class ImageDataset(torch.utils.data.Dataset):
             all_classes = all_classes.union(set(class_name_map.keys()))
         if len(all_classes) > 0:
             classes_set = all_classes
-        return samples, classes_set, class_name_map
+        return samples, classes_set, class_name_map, {}
 
     def _load_coco_annotations(self, split):
         ann_file = self._find_coco_annotation_file(split)
@@ -517,7 +551,7 @@ class ImageDataset(torch.utils.data.Dataset):
 
         if len(class_name_map) > 0:
             classes_set = classes_set.union(set(class_name_map.keys()))
-        return samples, classes_set, class_name_map
+        return samples, classes_set, class_name_map, {}
 
     def _load_voc_annotations(self, split):
         voc_root = self._find_voc_root()
@@ -594,7 +628,144 @@ class ImageDataset(torch.utils.data.Dataset):
                 samples[img_rel].append([x1, y1, x2, y2, class_to_id[class_name]])
 
         classes_set = set(class_name_map.keys())
-        return samples, classes_set, class_name_map
+        return samples, classes_set, class_name_map, {}
+
+    def _load_custom_json_annotations(self, split):
+        ann_file = self._find_custom_json_annotation_file(split)
+        if ann_file is None:
+            raise AssertionError(f"Custom JSON annotation file not found for split '{split}'.")
+
+        with open(ann_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not self._looks_like_custom_json(data):
+            raise AssertionError(f"Not a supported custom nested JSON file: {ann_file}")
+
+        image_records = data.get("images", [])
+        split_aliases = set(self._split_aliases(split))
+        if split == "train":
+            split_aliases = split_aliases.union({"train"})
+        else:
+            split_aliases = split_aliases.union({"val", "valid", "validation", "test"})
+
+        candidate_roots = [
+            self.image_dir,
+            self.data_dir,
+            os.path.join(self.data_dir, "images"),
+            os.path.dirname(ann_file),
+            os.path.dirname(os.path.dirname(ann_file)),
+        ]
+
+        samples = defaultdict(list)
+        sample_extras_map = {}
+        classes_set = set()
+        class_name_map = {}
+        class_name_to_id = {}
+        next_auto_class_id = 0
+
+        for image_rec in image_records:
+            if not isinstance(image_rec, dict):
+                continue
+
+            rec_split = str(image_rec.get("split", "")).strip().lower()
+            if rec_split and rec_split not in split_aliases:
+                # Skip explicit non-matching split records.
+                continue
+
+            file_name = image_rec.get("file_name", None)
+            if file_name is None:
+                continue
+
+            img_rel = self._resolve_relative_image_path(str(file_name), candidate_roots)
+            img_h, img_w = self._get_image_shape(img_rel)
+            img_w = float(img_w)
+            img_h = float(img_h)
+
+            image_boxes = []
+            image_meta = []
+            ann_list = image_rec.get("annotations", [])
+            if not isinstance(ann_list, list):
+                ann_list = []
+
+            for ann in ann_list:
+                if not isinstance(ann, dict):
+                    continue
+
+                cls_id_raw = ann.get("category_id", None)
+                cls_name_raw = ann.get("category_name", None)
+                cls_name = str(cls_name_raw).strip() if cls_name_raw is not None else ""
+
+                cls_id = None
+                if cls_id_raw is not None:
+                    try:
+                        cls_id = int(cls_id_raw)
+                    except Exception:
+                        cls_id = None
+
+                if cls_id is None:
+                    if cls_name:
+                        if cls_name not in class_name_to_id:
+                            class_name_to_id[cls_name] = next_auto_class_id
+                            next_auto_class_id += 1
+                        cls_id = class_name_to_id[cls_name]
+                    else:
+                        # Last-resort fallback class.
+                        cls_id = 0
+
+                if cls_name:
+                    class_name_map[cls_id] = cls_name
+                elif cls_id not in class_name_map:
+                    class_name_map[cls_id] = f"class_{cls_id}"
+                classes_set.add(cls_id)
+
+                bbox_norm = ann.get("bounding_box_normalized", None)
+                if not isinstance(bbox_norm, dict):
+                    continue
+
+                try:
+                    x_center = float(bbox_norm.get("x_center"))
+                    y_center = float(bbox_norm.get("y_center"))
+                    box_w = float(bbox_norm.get("width"))
+                    box_h = float(bbox_norm.get("height"))
+                except Exception:
+                    continue
+
+                x1 = (x_center - box_w / 2.0) * img_w
+                y1 = (y_center - box_h / 2.0) * img_h
+                x2 = (x_center + box_w / 2.0) * img_w
+                y2 = (y_center + box_h / 2.0) * img_h
+
+                x1 = max(0.0, min(img_w - 1.0, x1))
+                y1 = max(0.0, min(img_h - 1.0, y1))
+                x2 = max(0.0, min(img_w - 1.0, x2))
+                y2 = max(0.0, min(img_h - 1.0, y2))
+                if x2 <= x1 or y2 <= y1:
+                    continue
+
+                severity = self._extract_custom_json_severity(ann)
+                image_boxes.append([x1, y1, x2, y2, cls_id, severity])
+
+                image_meta.append(
+                    {
+                        "annotation_id": ann.get("annotation_id", None),
+                        "category_name": class_name_map.get(cls_id, f"class_{cls_id}"),
+                        "zone_estimation": ann.get("zone_estimation", None),
+                        "damage_metrics": ann.get("damage_metrics", None),
+                        "risk_assessment": ann.get("risk_assessment", None),
+                        "description": ann.get("description", None),
+                    }
+                )
+
+            if len(image_boxes) == 0 and split == "train":
+                continue
+
+            samples[img_rel].extend(image_boxes)
+            if len(image_meta) > 0:
+                sample_extras_map[img_rel] = image_meta
+
+        if len(samples) == 0:
+            raise AssertionError(f"No custom JSON samples found in {ann_file} for split '{split}'")
+
+        return samples, classes_set, class_name_map, sample_extras_map
 
     def _resolve_yolo_label_path(self, image_split_dir, label_split_dir, rel_path_in_split):
         stem_rel = os.path.splitext(self._normalize_relpath(rel_path_in_split))[0]
@@ -698,6 +869,103 @@ class ImageDataset(torch.utils.data.Dataset):
                 if os.path.exists(ann_file):
                     return ann_file
         return None
+
+    def _find_custom_json_annotation_file(self, split):
+        split_aliases = self._split_aliases(split)
+        split_tokens = []
+        for alias in split_aliases:
+            split_tokens.append(alias)
+            if alias == "val":
+                split_tokens.extend(["valid", "validation"])
+            if alias == "train":
+                split_tokens.append("training")
+
+        parent_dir = os.path.dirname(self.data_dir.rstrip("/\\"))
+        candidate_dirs = [
+            os.path.join(self.data_dir, "annotations"),
+            os.path.join(self.data_dir, "json_splits"),
+            os.path.join(parent_dir, "json_splits") if parent_dir else "",
+            self.data_dir,
+        ]
+
+        candidate_names = []
+        for token in split_tokens:
+            candidate_names.extend(
+                [
+                    f"{token}.json",
+                    f"{token}_annotations.json",
+                    f"aircraft_damage_{token}.json",
+                ]
+            )
+
+        # 1) Fast path: direct names
+        for directory in candidate_dirs:
+            if not directory or not os.path.isdir(directory):
+                continue
+            for name in candidate_names:
+                ann_file = os.path.join(directory, name)
+                if os.path.exists(ann_file):
+                    return ann_file
+
+        # 2) Fallback: scan json files and pick one that matches custom schema and split
+        for directory in candidate_dirs:
+            if not directory or not os.path.isdir(directory):
+                continue
+            for name in sorted(os.listdir(directory)):
+                if not name.lower().endswith(".json"):
+                    continue
+                ann_file = os.path.join(directory, name)
+                try:
+                    with open(ann_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if not self._looks_like_custom_json(data):
+                        continue
+                    image_recs = data.get("images", [])
+                    if not isinstance(image_recs, list):
+                        continue
+                    for rec in image_recs:
+                        if not isinstance(rec, dict):
+                            continue
+                        rec_split = str(rec.get("split", "")).strip().lower()
+                        if not rec_split or rec_split in split_tokens:
+                            return ann_file
+                except Exception:
+                    continue
+        return None
+
+    def _looks_like_custom_json(self, data):
+        if not isinstance(data, dict):
+            return False
+        images = data.get("images", None)
+        if not isinstance(images, list) or len(images) == 0:
+            return False
+        first = images[0]
+        if not isinstance(first, dict):
+            return False
+        if "annotations" in first and isinstance(first.get("annotations"), list):
+            return True
+        return False
+
+    def _extract_custom_json_severity(self, ann):
+        damage_metrics = ann.get("damage_metrics", None)
+        if isinstance(damage_metrics, dict):
+            for key in ["raw_severity_score", "severity_score", "severity", "risk_score"]:
+                if key in damage_metrics and damage_metrics[key] is not None:
+                    try:
+                        return float(damage_metrics[key])
+                    except Exception:
+                        pass
+
+        risk_assessment = ann.get("risk_assessment", None)
+        if isinstance(risk_assessment, dict):
+            for key in ["raw_severity_score", "severity_score", "severity", "risk_score"]:
+                if key in risk_assessment and risk_assessment[key] is not None:
+                    try:
+                        return float(risk_assessment[key])
+                    except Exception:
+                        pass
+
+        return float("nan")
 
     def _find_voc_root(self):
         candidates = [

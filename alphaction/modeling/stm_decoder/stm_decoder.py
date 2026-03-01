@@ -924,7 +924,11 @@ class STMDecoder(nn.Module):
             target["image_size_xyxy_tgt"] = frame_size.unsqueeze(0).repeat(len(boxes), 1).to(self.device)
 
             severity_values = None
-            if isinstance(extras, dict) and "severity" in extras:
+            if isinstance(extras, list):
+                if idx < len(extras) and isinstance(extras[idx], dict):
+                    if "severity" in extras[idx]:
+                        severity_values = extras[idx]["severity"]
+            elif isinstance(extras, dict) and "severity" in extras:
                 severity_raw = extras["severity"]
                 if isinstance(severity_raw, (list, tuple)):
                     if idx < len(severity_raw):

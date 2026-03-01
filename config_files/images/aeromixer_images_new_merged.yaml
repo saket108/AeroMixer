@@ -1,3 +1,10 @@
+# New merged dataset (YOLO layout).
+# JSON split metadata exists at:
+# C:/Users/tsake/OneDrive/Desktop/full dataset/json_splits/aircraft_damage_train.json
+# C:/Users/tsake/OneDrive/Desktop/full dataset/json_splits/aircraft_damage_valid.json
+# C:/Users/tsake/OneDrive/Desktop/full dataset/json_splits/aircraft_damage_test.json
+#
+# This config uses AeroMixer's native custom nested JSON adapter.
 DATA:
   INPUT_TYPE: "image"
   PATH_TO_DATA_DIR: "C:/Users/tsake/OneDrive/Desktop/full dataset/merged_dataset"
@@ -9,7 +16,6 @@ DATA:
   STD: [0.26862954, 0.26130258, 0.27577711]
   DATASETS: ['aircraft']
   OPEN_VOCABULARY: False
-  # Keep more spatial detail for small defects.
   TRAIN_MIN_SCALES: [512, 640]
   TEST_MIN_SCALES: [640]
 
@@ -18,15 +24,12 @@ MODEL:
   PRE_EXTRACT_FEAT: False
 
   BACKBONE:
-    # Finer patching improves thin-crack and small-defect sensitivity.
     CONV_BODY: "ViT-B/16"
     PATHWAYS: 1
 
-  # ----------- IMPORTANT PART (Detection Mode) ----------
   STM:
     QUERY_INIT_MODE: "learnable_anchors"
     QUERY_INIT_SMALL_OBJECT_BIAS: True
-    # Optional decoder attention diagnostics (logs only, no optimization impact).
     ATTN_TELEMETRY: False
     ATTN_TELEMETRY_STAGEWISE: True
     ATTN_TELEMETRY_COMPARE_NOMASK: False
@@ -37,12 +40,10 @@ MODEL:
 
     TEMPORAL_POINTS: 1
 
-    # convert action detection → object detection
     ACTION_CLASSES: 6
     OBJECT_CLASSES: 6
     NUM_ACT: 6
     NUM_CLS: 6
-    # Optional severity regression head (per query).
     PREDICT_SEVERITY: True
     SEVERITY_WEIGHT: 1.0
 
@@ -62,4 +63,4 @@ IMAGES:
   VOCAB_FILE: ""
   VOCAB_OPEN_FILE: ""
 
-OUTPUT_DIR: "output/aircraft_run"
+OUTPUT_DIR: "output/aircraft_full_run"
