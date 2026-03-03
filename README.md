@@ -324,11 +324,35 @@ python scripts/run_iof_tau_ablation.py \
   --clamp-values 0.5,1.0,2.0
 ```
 
+Notes:
+- Source annotations can be `txt` split files or YOLO folder layout (`images/` + `labels/`).
+- For ablation consistency, the script materializes a subset as `train.txt/test.txt` and runs with `DATA.ANNOTATION_FORMAT=txt`.
+
 The script writes `ablation_summary.csv` under `outputs/iof_tau_ablation/` with:
 
 - `attn_entropy_avg`, `attn_diag_avg`, `attn_tau_mean_avg`, `refine_l1_avg`
 - `mAP@0.5`
 - `SmallObject/AP@0.5`
+
+## Baseline Benchmark Runner
+
+Run AeroMixer / YOLO / DETR commands and aggregate one benchmark CSV:
+
+```bash
+python scripts/run_baseline_benchmarks.py \
+  --output-root outputs/baseline_benchmarks \
+  --tag merged_dataset_v1 \
+  --aeromixer-cmd "python train_net.py --config-file config_files/images/aeromixer_images.yaml --skip-final-test" \
+  --aeromixer-metrics "output/aircraft_run/inference/train_metrics_final.json" \
+  --yolo-cmd "python path/to/yolo_train.py ..." \
+  --yolo-metrics "runs/detect/train/results.csv" \
+  --detr-cmd "python path/to/detr_train.py ..." \
+  --detr-metrics "outputs/detr/metrics.json"
+```
+
+Output:
+- `outputs/baseline_benchmarks/benchmark_summary.csv`
+- `outputs/baseline_benchmarks/benchmark_summary.json`
 
 ## License
 

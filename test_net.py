@@ -30,6 +30,12 @@ def main():
     )
     parser.add_argument("--local_rank", type=int, default=0)
     parser.add_argument(
+        "--verbose-startup",
+        dest="verbose_startup",
+        action="store_true",
+        help="Print full environment and configuration details at startup.",
+    )
+    parser.add_argument(
         "opts",
         help="Modify config options using the command-line",
         default=None,
@@ -61,11 +67,22 @@ def main():
     # Print experimental infos.
     save_dir = ""
     logger = setup_logger("alphaction", save_dir, get_rank())
-    logger.info("Using {} GPUs".format(num_gpus))
-    logger.info(cfg)
-
-    logger.info("Collecting env info (might take some time)")
-    logger.info("\n" + get_pretty_env_info())
+    logger.info("Using {} process(es)".format(num_gpus))
+    logger.info("Config file: {}".format(args.config_file))
+    logger.info(
+        "Runtime summary: input_type=%s, annotation_format=%s, data_dir=%s, metric=%s, backbone=%s",
+        cfg.DATA.INPUT_TYPE,
+        cfg.DATA.ANNOTATION_FORMAT,
+        cfg.DATA.PATH_TO_DATA_DIR,
+        cfg.TEST.METRIC,
+        cfg.MODEL.BACKBONE.CONV_BODY,
+    )
+    if args.verbose_startup:
+        logger.info(cfg)
+        logger.info("Collecting env info (might take some time)")
+        logger.info("\n" + get_pretty_env_info())
+    else:
+        logger.info("Startup logs condensed. Use --verbose-startup for full env/config dump.")
 
     # Build the model.
     if cfg.MODEL.DET == 'STMDetector':

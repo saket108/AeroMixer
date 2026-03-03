@@ -37,6 +37,12 @@ class TestCliHelpSmoke(unittest.TestCase):
     def test_build_open_vocab_help(self):
         self._run_help("preprocess/build_open_vocab.py")
 
+    def test_run_iof_tau_ablation_help(self):
+        self._run_help("scripts/run_iof_tau_ablation.py")
+
+    def test_run_baseline_benchmarks_help(self):
+        self._run_help("scripts/run_baseline_benchmarks.py")
+
 
 if __name__ == "__main__":
     unittest.main()

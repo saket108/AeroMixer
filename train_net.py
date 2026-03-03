@@ -220,6 +220,12 @@ def main():
         help='Set the dataset split'
     )
     parser.add_argument(
+        "--verbose-startup",
+        dest="verbose_startup",
+        action="store_true",
+        help="Print full environment and configuration details at startup.",
+    )
+    parser.add_argument(
         "opts",
         help="Modify config options using the command-line",
         default=None,
@@ -252,17 +258,31 @@ def main():
 
     # Print experimental infos.
     logger = setup_logger("alphaction", output_dir, global_rank)
-    logger.info("Using {} GPUs".format(num_gpus))
-    logger.info(args)
+    logger.info("Using {} process(es)".format(num_gpus))
+    logger.info("Config file: {}".format(args.config_file))
+    logger.info("Output dir: {}".format(output_dir))
+    logger.info(
+        "Runtime summary: input_type=%s, annotation_format=%s, data_dir=%s, epochs=%s, batch=%s, backbone=%s",
+        cfg.DATA.INPUT_TYPE,
+        cfg.DATA.ANNOTATION_FORMAT,
+        cfg.DATA.PATH_TO_DATA_DIR,
+        cfg.SOLVER.MAX_EPOCH,
+        cfg.SOLVER.IMAGES_PER_BATCH,
+        cfg.MODEL.BACKBONE.CONV_BODY,
+    )
 
-    logger.info("Collecting env info (might take some time)")
-    logger.info("\n" + get_pretty_env_info())
+    if args.verbose_startup:
+        logger.info(args)
+        logger.info("Collecting env info (might take some time)")
+        logger.info("\n" + get_pretty_env_info())
 
-    logger.info("Loaded configuration file {}".format(args.config_file))
-    with open(args.config_file, "r") as cf:
-        config_str = "\n" + cf.read()
-        logger.info(config_str)
-    logger.info("Running with config:\n{}".format(cfg))
+        logger.info("Loaded configuration file {}".format(args.config_file))
+        with open(args.config_file, "r") as cf:
+            config_str = "\n" + cf.read()
+            logger.info(config_str)
+        logger.info("Running with config:\n{}".format(cfg))
+    else:
+        logger.info("Startup logs condensed. Use --verbose-startup for full env/config dump.")
 
     tblogger = None
     if args.tfboard:

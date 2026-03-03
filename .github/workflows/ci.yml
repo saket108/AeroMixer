@@ -40,7 +40,7 @@ jobs:
 
       - name: Compile smoke check
         run: |
-          python -m compileall alphaction preprocess demo.py demo_image.py train_net.py test_net.py
+          python -m compileall alphaction preprocess scripts demo_image.py train_net.py test_net.py
 
       - name: Run smoke tests
         run: |
