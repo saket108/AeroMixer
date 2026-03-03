@@ -115,8 +115,6 @@ def _normalize_relpath(path: str) -> str:
 
 
 def _resolve_yolo_label_path(source_data_dir: str, image_split_dir: str, used_split_alias: str, image_path: str) -> str:
-    labels_root = os.path.join(source_data_dir, "labels")
-    label_split_dir = os.path.join(labels_root, used_split_alias)
     rel_path_in_split = os.path.relpath(image_path, image_split_dir)
     stem_rel = os.path.splitext(_normalize_relpath(rel_path_in_split))[0]
     parts = [p for p in stem_rel.split("/") if p]
@@ -129,7 +127,14 @@ def _resolve_yolo_label_path(source_data_dir: str, image_split_dir: str, used_sp
         candidate_rel_paths.append("labels/" + no_images_rel)
         candidate_rel_paths.append("labels/" + os.path.basename(no_images_rel))
 
-    candidate_roots = [label_split_dir, labels_root, source_data_dir]
+    candidate_roots = [
+        os.path.join(source_data_dir, "labels", used_split_alias),
+        os.path.join(source_data_dir, used_split_alias, "labels"),
+        os.path.join(source_data_dir, "labels"),
+        os.path.join(source_data_dir, used_split_alias),
+        os.path.dirname(image_split_dir),
+        source_data_dir,
+    ]
     for root in candidate_roots:
         if not os.path.isdir(root):
             continue
@@ -137,16 +142,37 @@ def _resolve_yolo_label_path(source_data_dir: str, image_split_dir: str, used_sp
             trial = os.path.join(root, rel_path.replace("/", os.sep))
             if os.path.exists(trial):
                 return trial
-    return os.path.join(label_split_dir, base_name)
+    return os.path.join(source_data_dir, "labels", used_split_alias, base_name)
 
 
 def _load_yolo_grouped_lines(source_data_dir: str, split: str) -> Dict[str, List[str]]:
-    images_root = os.path.join(source_data_dir, "images")
-    image_split_dir, used_split_alias = _find_existing_split_dir(images_root, _split_aliases(split))
-    if image_split_dir is None or used_split_alias is None:
+    aliases = _split_aliases(split)
+    image_split_dir = None
+    used_split_alias = None
+    images_root = None
+    for alias in aliases:
+        root_style_dir = os.path.join(source_data_dir, "images", alias)
+        split_style_dir = os.path.join(source_data_dir, alias, "images")
+        flat_style_dir = os.path.join(source_data_dir, alias)
+        if os.path.isdir(root_style_dir):
+            images_root = os.path.join(source_data_dir, "images")
+            image_split_dir = root_style_dir
+            used_split_alias = alias
+            break
+        if os.path.isdir(split_style_dir):
+            images_root = source_data_dir
+            image_split_dir = split_style_dir
+            used_split_alias = alias
+            break
+        if os.path.isdir(flat_style_dir):
+            images_root = source_data_dir
+            image_split_dir = flat_style_dir
+            used_split_alias = alias
+            break
+
+    if image_split_dir is None or used_split_alias is None or images_root is None:
         raise FileNotFoundError(
-            f"YOLO image split for '{split}' not found under {images_root}. "
-            f"Tried {_split_aliases(split)}."
+            f"YOLO image split for '{split}' not found under {source_data_dir}. Tried aliases: {aliases}."
         )
 
     exts = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
@@ -211,6 +237,11 @@ def _detect_source_annotation_format(source_data_dir: str, configured_format: st
         return "txt"
     if os.path.isdir(os.path.join(source_data_dir, "labels")) and os.path.isdir(os.path.join(source_data_dir, "images")):
         return "yolo"
+    for alias in _split_aliases("train"):
+        split_images = os.path.join(source_data_dir, alias, "images")
+        split_labels = os.path.join(source_data_dir, alias, "labels")
+        if os.path.isdir(split_images) and os.path.isdir(split_labels):
+            return "yolo"
     raise ValueError(
         "Could not detect source annotation format for ablation subset creation. "
         "Expected txt split files or YOLO images/labels folders."
@@ -343,7 +374,10 @@ def main():
             subset_stats = _prepare_subset(source_data_dir, subset_dir, args.subset_ratio, args.seed)
         elif source_format == "yolo":
             subset_stats = _prepare_subset_from_yolo(source_data_dir, subset_dir, args.subset_ratio, args.seed)
-            subset_frame_dir = os.path.join(source_data_dir, "images")
+            if os.path.isdir(os.path.join(source_data_dir, "images")):
+                subset_frame_dir = os.path.join(source_data_dir, "images")
+            else:
+                subset_frame_dir = source_data_dir
         else:
             raise ValueError(f"Unsupported ablation source format: {source_format}")
         print("Subset prepared:", subset_stats)
