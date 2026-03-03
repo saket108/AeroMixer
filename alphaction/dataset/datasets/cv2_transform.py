@@ -979,11 +979,11 @@ class PreprocessWithBoxes:
 
     def _prepare_boxes(self, boxes, src_h, src_w, dst_h, dst_w):
         if boxes is None:
-            return None
+            return None, None
 
         boxes_np = np.asarray(boxes, dtype=np.float32).reshape(-1, 4).copy()
         if boxes_np.size == 0:
-            return boxes_np
+            return boxes_np, np.zeros((0,), dtype=bool)
 
         # Accept either normalized [0, 1] boxes or absolute pixel boxes.
         if float(np.max(np.abs(boxes_np))) <= 1.5:
@@ -995,7 +995,7 @@ class PreprocessWithBoxes:
 
         boxes_np = clip_boxes_to_image(boxes_np, dst_h, dst_w)
         keep = (boxes_np[:, 2] > boxes_np[:, 0]) & (boxes_np[:, 3] > boxes_np[:, 1])
-        return boxes_np[keep]
+        return boxes_np[keep], keep
 
     def _flip_boxes(self, boxes, width):
         if boxes is None or boxes.size == 0:
@@ -1018,7 +1018,7 @@ class PreprocessWithBoxes:
         stacked = np.stack(chw_images, axis=1).astype(np.float32)
         return torch.from_numpy(stacked)
 
-    def process(self, images, boxes=None):
+    def process(self, images, boxes=None, return_keep=False):
         if images is None or len(images) == 0:
             raise ValueError("PreprocessWithBoxes.process expects a non-empty image list.")
 
@@ -1030,7 +1030,7 @@ class PreprocessWithBoxes:
             for image in images
         ]
 
-        boxes_out = self._prepare_boxes(boxes, src_h, src_w, dst_h, dst_w)
+        boxes_out, keep_mask = self._prepare_boxes(boxes, src_h, src_w, dst_h, dst_w)
 
         do_flip = False
         if self.is_train:
@@ -1043,4 +1043,6 @@ class PreprocessWithBoxes:
             boxes_out = self._flip_boxes(boxes_out, dst_w)
 
         tensor = self._to_tensor(resized)
+        if return_keep:
+            return tensor, boxes_out, keep_mask
         return tensor, boxes_out

@@ -294,8 +294,34 @@ class ImageDataset(torch.utils.data.Dataset):
             boxes[:, [0, 2]] /= float(raw_resolution[1])
             boxes[:, [1, 3]] /= float(raw_resolution[0])
 
-        # preprocess images with boxes
-        imgs_proc, boxes_proc = self.preprocess_with_box.process(imgs, boxes=boxes)
+        # preprocess images with boxes and keep mask so labels remain aligned with filtered boxes.
+        imgs_proc, boxes_proc, keep_mask = self.preprocess_with_box.process(
+            imgs, boxes=boxes, return_keep=True
+        )
+
+        if self._split == "train" and keep_mask is not None:
+            keep_mask = np.asarray(keep_mask, dtype=bool).reshape(-1)
+            if len(box_labels) == keep_mask.shape[0]:
+                box_labels = box_labels[keep_mask]
+            elif keep_mask.shape[0] > 0:
+                # Last-resort safeguard for unexpected shape mismatches.
+                box_labels = box_labels[: int(keep_mask.sum())]
+
+            if sample.get("severity", None) is not None:
+                severity_vals = sample["severity"]
+                if len(severity_vals) == keep_mask.shape[0]:
+                    severity_vals = severity_vals[keep_mask]
+                else:
+                    severity_vals = severity_vals[: int(keep_mask.sum())]
+            else:
+                severity_vals = None
+
+            annotation_extras = sample.get("annotation_extras", None)
+            if isinstance(annotation_extras, list) and len(annotation_extras) == keep_mask.shape[0]:
+                annotation_extras = [item for item, k in zip(annotation_extras, keep_mask.tolist()) if k]
+        else:
+            severity_vals = sample.get("severity", None)
+            annotation_extras = sample.get("annotation_extras", None)
 
         pathways = self.cfg.MODEL.BACKBONE.PATHWAYS
         imgs_packed = utils.pack_pathway_output(self.cfg, imgs_proc, pathways=pathways)
@@ -316,10 +342,10 @@ class ImageDataset(torch.utils.data.Dataset):
 
 
         extras = {"extra_boxes": None, "image_rel": img_rel, "sample_id": index}
-        if sample.get("severity", None) is not None:
-            extras["severity"] = sample["severity"].astype(np.float32)
-        if sample.get("annotation_extras", None) is not None:
-            extras["annotation_extras"] = sample["annotation_extras"]
+        if severity_vals is not None:
+            extras["severity"] = np.asarray(severity_vals, dtype=np.float32)
+        if annotation_extras is not None:
+            extras["annotation_extras"] = annotation_extras
 
         boxes_out = boxes_proc if boxes_proc is None else boxes_proc.astype(np.float32)
         
