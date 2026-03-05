@@ -439,6 +439,86 @@ def _extract_map_key(eval_res):
     return None
 
 
+def _format_iou(iou):
+    return f"{float(iou):.2f}".rstrip("0").rstrip(".")
+
+
+def _ap_key_for_iou(iou):
+    return f"PascalBoxes_Precision/mAP@{_format_iou(iou)}IOU"
+
+
+def _build_ap5095_iou_list(dataset):
+    cfg_obj = getattr(dataset, "cfg", None)
+    test_cfg = getattr(cfg_obj, "TEST", None) if cfg_obj is not None else None
+    iou_min = float(getattr(test_cfg, "AP5095_MIN", 0.5))
+    iou_max = float(getattr(test_cfg, "AP5095_MAX", 0.95))
+    iou_step = float(getattr(test_cfg, "AP5095_STEP", 0.05))
+
+    iou_min = max(0.0, min(1.0, iou_min))
+    iou_max = max(0.0, min(1.0, iou_max))
+    if iou_max < iou_min:
+        iou_min, iou_max = iou_max, iou_min
+    if iou_step <= 0.0:
+        iou_step = 0.05
+
+    vals = []
+    cur = iou_min
+    while cur <= (iou_max + 1e-9):
+        vals.append(round(cur, 10))
+        cur += iou_step
+    if not vals:
+        vals = [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
+    return vals
+
+
+def _extract_map_at_iou(eval_res, iou):
+    exact_key = _ap_key_for_iou(iou)
+    if exact_key in eval_res:
+        try:
+            return float(eval_res[exact_key])
+        except Exception:
+            return None
+
+    suffix = f"@{_format_iou(iou)}IOU"
+    for key, value in eval_res.items():
+        if str(key).startswith("PascalBoxes_Precision/mAP@") and str(key).endswith(suffix):
+            try:
+                return float(value)
+            except Exception:
+                return None
+    return None
+
+
+def _maybe_add_ap5095_metrics(dataset, results, targets, eval_res, logger):
+    cfg_obj = getattr(dataset, "cfg", None)
+    test_cfg = getattr(cfg_obj, "TEST", None) if cfg_obj is not None else None
+    report_ap5095 = bool(getattr(test_cfg, "REPORT_AP5095", False))
+    if not report_ap5095:
+        return eval_res
+
+    iou_list = _build_ap5095_iou_list(dataset)
+    if len(iou_list) <= 1:
+        return eval_res
+
+    eval_sweep = frame_mAP_pascal(
+        results,
+        targets,
+        dataset.closed_set_classes,
+        logger,
+        iou_list=iou_list,
+    )
+    eval_res.update(eval_sweep)
+
+    per_iou = []
+    for iou in iou_list:
+        v = _extract_map_at_iou(eval_sweep, iou)
+        if v is not None:
+            per_iou.append(v)
+    if per_iou:
+        eval_res["PascalBoxes_Precision/mAP@0.5:0.95IOU"] = float(np.mean(per_iou))
+    return eval_res
+
+
 def _compute_area_ap_breakdown(results, targets, dataset, logger):
     iou_value = float(dataset.test_iou_thresh)
     area_bins = [
@@ -593,6 +673,7 @@ def do_image_evaluation(dataset, predictions, output_folder, logger, metric="ima
         logger,
         iou_list=[dataset.test_iou_thresh],
     )
+    eval_res = _maybe_add_ap5095_metrics(dataset, results, targets, eval_res, logger)
     eval_res.update(_compute_area_ap_breakdown(results, targets, dataset, logger))
 
     logger.info("Evaluation results ({}):\n{}".format(eval_metric, pformat(eval_res, indent=2)))
@@ -643,6 +724,7 @@ def do_multimodal_image_evaluation(dataset, predictions, output_folder, logger, 
         logger,
         iou_list=[dataset.test_iou_thresh],
     )
+    eval_res = _maybe_add_ap5095_metrics(dataset, results, targets, eval_res, logger)
     eval_res.update(_compute_area_ap_breakdown(results, targets, dataset, logger))
 
     logger.info("Multimodal evaluation results ({}):\n{}".format(eval_metric, pformat(eval_res, indent=2)))

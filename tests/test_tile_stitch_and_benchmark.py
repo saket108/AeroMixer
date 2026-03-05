@@ -67,6 +67,7 @@ class TestTileStitchAndBenchmark(unittest.TestCase):
             log_dir.mkdir(parents=True, exist_ok=True)
             (log_dir / "result_image.log").write_text(
                 "{ 'PascalBoxes_Precision/mAP@0.5IOU': np.float64(0.1234), "
+                "'PascalBoxes_Precision/mAP@0.5:0.95IOU': np.float64(0.0567), "
                 "'SmallObject/AP@0.5IOU': 0.0456 }",
                 encoding="utf-8",
             )
@@ -84,6 +85,7 @@ class TestTileStitchAndBenchmark(unittest.TestCase):
             eval_metrics = pl._extract_eval_metrics(out_dir)
             self.assertIn("aircraft", eval_metrics)
             self.assertAlmostEqual(float(eval_metrics["aircraft"]["map50"]), 0.1234, places=6)
+            self.assertAlmostEqual(float(eval_metrics["aircraft"]["map5095"]), 0.0567, places=6)
 
             rows = pl._append_benchmark_rows(tmp, manifest, eval_metrics)
             self.assertEqual(len(rows), 1)
@@ -99,4 +101,3 @@ class TestTileStitchAndBenchmark(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

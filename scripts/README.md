@@ -5,6 +5,7 @@
   - Presets: `lite`, `full`, `prod`
   - `prod` enables detector-only guardrails by default
   - Auto-appends eval metrics to `benchmarks/summary.csv`
+  - Supports AP50 and optional AP50:95 reporting (`TEST.REPORT_AP5095`)
   - Supports tiled runs with stitched full-image evaluation (`--tile-stitch-eval`)
   - Supports integrated threshold sweep output (`--tune-thresholds`)
 - `train_any_dataset.py`: dataset-aware training launcher
