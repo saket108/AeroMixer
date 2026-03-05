@@ -1,4 +1,5 @@
 import os
+import re
 from pprint import pformat
 
 import numpy as np
@@ -10,6 +11,205 @@ from ..pascal_wrapper import frame_mAP_pascal
 
 def _make_image_key(image_rel):
     return str(image_rel)
+
+
+_TILE_KEY_RE = re.compile(r"^(?P<base>.+)__x(?P<x>\d+)_y(?P<y>\d+)$")
+
+
+def _parse_tiled_key(image_key):
+    stem = os.path.splitext(str(image_key))[0]
+    m = _TILE_KEY_RE.match(stem)
+    if m is None:
+        return None
+    return m.group("base"), int(m.group("x")), int(m.group("y"))
+
+
+def _norm_xyxy_to_abs(boxes_norm, width, height):
+    boxes = np.asarray(boxes_norm, dtype=np.float32).reshape(-1, 4)
+    if boxes.size == 0:
+        return np.zeros((0, 4), dtype=np.float32)
+    out = boxes.copy()
+    out[:, [0, 2]] *= float(width)
+    out[:, [1, 3]] *= float(height)
+    return out
+
+
+def _abs_xyxy_to_norm(boxes_abs, width, height):
+    boxes = np.asarray(boxes_abs, dtype=np.float32).reshape(-1, 4)
+    if boxes.size == 0:
+        return np.zeros((0, 4), dtype=np.float32)
+    out = boxes.copy()
+    out[:, [0, 2]] /= max(1.0, float(width))
+    out[:, [1, 3]] /= max(1.0, float(height))
+    return np.clip(out, 0.0, 1.0)
+
+
+def _pairwise_iou(box, boxes):
+    if boxes.size == 0:
+        return np.zeros((0,), dtype=np.float32)
+    xx1 = np.maximum(box[0], boxes[:, 0])
+    yy1 = np.maximum(box[1], boxes[:, 1])
+    xx2 = np.minimum(box[2], boxes[:, 2])
+    yy2 = np.minimum(box[3], boxes[:, 3])
+    w = np.clip(xx2 - xx1, a_min=0.0, a_max=None)
+    h = np.clip(yy2 - yy1, a_min=0.0, a_max=None)
+    inter = w * h
+    area_a = max(0.0, (box[2] - box[0]) * (box[3] - box[1]))
+    area_b = np.clip((boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1]), a_min=0.0, a_max=None)
+    union = np.clip(area_a + area_b - inter, a_min=1e-6, a_max=None)
+    return (inter / union).astype(np.float32)
+
+
+def _nms_xyxy(boxes, scores, iou_thresh):
+    boxes = np.asarray(boxes, dtype=np.float32).reshape(-1, 4)
+    scores = np.asarray(scores, dtype=np.float32).reshape(-1)
+    if boxes.shape[0] == 0:
+        return np.zeros((0,), dtype=np.int64)
+    order = np.argsort(-scores)
+    keep = []
+    while order.size > 0:
+        i = int(order[0])
+        keep.append(i)
+        if order.size == 1:
+            break
+        rest = order[1:]
+        ious = _pairwise_iou(boxes[i], boxes[rest])
+        order = rest[ious <= float(iou_thresh)]
+    return np.asarray(keep, dtype=np.int64)
+
+
+def _dedupe_gt_xyxy(boxes, labels, iou_thresh):
+    boxes = np.asarray(boxes, dtype=np.float32).reshape(-1, 4)
+    labels = np.asarray(labels, dtype=np.int64).reshape(-1)
+    if boxes.shape[0] == 0:
+        return boxes, labels
+    areas = np.clip((boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1]), a_min=0.0, a_max=None)
+    keep_global = []
+    for cls in np.unique(labels):
+        cls_idx = np.where(labels == cls)[0]
+        if cls_idx.size == 0:
+            continue
+        order = cls_idx[np.argsort(-areas[cls_idx])]
+        kept = []
+        for idx in order:
+            if len(kept) == 0:
+                kept.append(int(idx))
+                continue
+            ious = _pairwise_iou(boxes[idx], boxes[np.asarray(kept, dtype=np.int64)])
+            if np.all(ious <= float(iou_thresh)):
+                kept.append(int(idx))
+        keep_global.extend(kept)
+    keep_global = np.asarray(sorted(set(keep_global)), dtype=np.int64)
+    return boxes[keep_global], labels[keep_global]
+
+
+def _stitch_tiled_predictions(results, targets, nms_iou=0.5, gt_dedup_iou=0.9):
+    total = len(targets)
+    tile_keys = 0
+    groups = {}
+
+    for image_key, target in targets.items():
+        parsed = _parse_tiled_key(image_key)
+        if parsed is None:
+            continue
+        tile_keys += 1
+        base, off_x, off_y = parsed
+        h, w = target["resolution"]
+        group = groups.setdefault(
+            base,
+            {
+                "full_w": 0,
+                "full_h": 0,
+                "gt_boxes_abs": [],
+                "gt_labels": [],
+                "pred_boxes_abs": [],
+                "pred_scores": [],
+                "pred_labels": [],
+            },
+        )
+        group["full_w"] = max(int(group["full_w"]), int(off_x + w))
+        group["full_h"] = max(int(group["full_h"]), int(off_y + h))
+
+        gt_abs = _norm_xyxy_to_abs(target["bbox"], w, h)
+        if gt_abs.shape[0] > 0:
+            gt_abs[:, [0, 2]] += float(off_x)
+            gt_abs[:, [1, 3]] += float(off_y)
+            group["gt_boxes_abs"].append(gt_abs)
+            group["gt_labels"].append(np.asarray(target["labels"], dtype=np.int64))
+
+        det = results.get(image_key, None)
+        if det is None:
+            continue
+        det_abs = _norm_xyxy_to_abs(det["boxes"], w, h)
+        if det_abs.shape[0] > 0:
+            det_abs[:, [0, 2]] += float(off_x)
+            det_abs[:, [1, 3]] += float(off_y)
+            group["pred_boxes_abs"].append(det_abs)
+            group["pred_scores"].append(np.asarray(det["scores"], dtype=np.float32))
+            group["pred_labels"].append(np.asarray(det["action_ids"], dtype=np.int64))
+
+    if tile_keys == 0:
+        return None, None, 0, 0
+
+    # Require majority tiled naming to avoid accidental remap on normal datasets.
+    if tile_keys < max(1, int(round(0.6 * total))):
+        return None, None, tile_keys, len(groups)
+
+    stitched_results = {}
+    stitched_targets = {}
+
+    for base, group in groups.items():
+        full_w = max(1, int(group["full_w"]))
+        full_h = max(1, int(group["full_h"]))
+
+        if group["gt_boxes_abs"]:
+            gt_boxes_abs = np.concatenate(group["gt_boxes_abs"], axis=0)
+            gt_labels = np.concatenate(group["gt_labels"], axis=0)
+            gt_boxes_abs, gt_labels = _dedupe_gt_xyxy(gt_boxes_abs, gt_labels, gt_dedup_iou)
+        else:
+            gt_boxes_abs = np.zeros((0, 4), dtype=np.float32)
+            gt_labels = np.zeros((0,), dtype=np.int64)
+
+        stitched_targets[base] = {
+            "bbox": _abs_xyxy_to_norm(gt_boxes_abs, full_w, full_h),
+            "labels": gt_labels.tolist(),
+            "resolution": (full_h, full_w),
+        }
+
+        if group["pred_boxes_abs"]:
+            pred_boxes_abs = np.concatenate(group["pred_boxes_abs"], axis=0)
+            pred_scores = np.concatenate(group["pred_scores"], axis=0)
+            pred_labels = np.concatenate(group["pred_labels"], axis=0)
+
+            keep_idx_all = []
+            for cls in np.unique(pred_labels):
+                cls_idx = np.where(pred_labels == cls)[0]
+                if cls_idx.size == 0:
+                    continue
+                keep_local = _nms_xyxy(pred_boxes_abs[cls_idx], pred_scores[cls_idx], nms_iou)
+                keep_idx_all.extend(cls_idx[keep_local].tolist())
+
+            if keep_idx_all:
+                keep_idx = np.asarray(sorted(keep_idx_all), dtype=np.int64)
+                pred_boxes_abs = pred_boxes_abs[keep_idx]
+                pred_scores = pred_scores[keep_idx]
+                pred_labels = pred_labels[keep_idx]
+            else:
+                pred_boxes_abs = np.zeros((0, 4), dtype=np.float32)
+                pred_scores = np.zeros((0,), dtype=np.float32)
+                pred_labels = np.zeros((0,), dtype=np.int64)
+        else:
+            pred_boxes_abs = np.zeros((0, 4), dtype=np.float32)
+            pred_scores = np.zeros((0,), dtype=np.float32)
+            pred_labels = np.zeros((0,), dtype=np.int64)
+
+        stitched_results[base] = {
+            "boxes": _abs_xyxy_to_norm(pred_boxes_abs, full_w, full_h),
+            "scores": pred_scores.astype(np.float32),
+            "action_ids": pred_labels.astype(np.int64),
+        }
+
+    return stitched_results, stitched_targets, tile_keys, len(groups)
 
 
 def _prepare_for_image_ap(predictions, dataset, score_thresh=0.0):
@@ -322,6 +522,35 @@ def do_image_evaluation(dataset, predictions, output_folder, logger, metric="ima
 
     logger.info("Preparing image results for {} evaluation.".format(eval_metric))
     results, targets = _prepare_for_image_ap(predictions, dataset)
+
+    cfg_obj = getattr(dataset, "cfg", None)
+    test_cfg = getattr(cfg_obj, "TEST", None) if cfg_obj is not None else None
+    stitch_eval = bool(getattr(test_cfg, "TILE_STITCH_EVAL", False))
+    if stitch_eval:
+        stitch_nms_iou = float(getattr(test_cfg, "TILE_STITCH_NMS_IOU", 0.5))
+        stitch_gt_dedup_iou = float(getattr(test_cfg, "TILE_STITCH_GT_DEDUP_IOU", 0.9))
+        stitched_results, stitched_targets, tile_keys, stitched_images = _stitch_tiled_predictions(
+            results,
+            targets,
+            nms_iou=stitch_nms_iou,
+            gt_dedup_iou=stitch_gt_dedup_iou,
+        )
+        if stitched_results is not None and stitched_targets is not None:
+            results, targets = stitched_results, stitched_targets
+            logger.info(
+                "Tile-stitch evaluation enabled: remapped %d tile samples into %d full-image groups "
+                "(NMS IoU=%.2f, GT dedup IoU=%.2f).",
+                tile_keys,
+                stitched_images,
+                stitch_nms_iou,
+                stitch_gt_dedup_iou,
+            )
+        else:
+            logger.info(
+                "Tile-stitch evaluation enabled but skipped (tile-like keys found: %d).",
+                tile_keys,
+            )
+
     eval_res = frame_mAP_pascal(
         results,
         targets,

@@ -8,7 +8,7 @@ on:
 jobs:
   smoke-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -42,7 +42,7 @@ jobs:
       - name: Lint and format gates
         run: |
           ruff check scripts tests train_net.py test_net.py demo_image.py preprocess/build_open_vocab.py --select F,E9
-          black --check scripts/pipeline.py scripts/train_any_dataset.py scripts/validate_dataset.py scripts/inference_pipeline.py scripts/freeze_dataset_version.py scripts/build_tiled_yolo_dataset.py tests/test_pipeline_smoke.py tests/test_cli_help_smoke.py
+          black --check scripts tests train_net.py test_net.py demo_image.py preprocess/build_open_vocab.py
 
 
       - name: Compile smoke check
@@ -52,3 +52,7 @@ jobs:
       - name: Run smoke tests
         run: |
           python -m unittest discover -s tests -v
+
+      - name: Run tiny end-to-end pipeline
+        run: |
+          python tests/e2e_tiny_pipeline.py

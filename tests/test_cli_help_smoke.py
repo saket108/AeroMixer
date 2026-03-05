@@ -58,6 +58,9 @@ class TestCliHelpSmoke(unittest.TestCase):
     def test_build_tiled_dataset_help(self):
         self._run_help("scripts/build_tiled_yolo_dataset.py")
 
+    def test_release_tools_help(self):
+        self._run_help("scripts/release_tools.py")
+
 
 if __name__ == "__main__":
     unittest.main()

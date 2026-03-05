@@ -332,7 +332,7 @@ Validation behavior:
 Direct low-level train command (advanced/debug):
 
 ```bash
-python train_net.py --config-file config_files/images/aeromixer_images.yaml
+python train_net.py --config-file config_files/presets/full.yaml
 ```
 
 Dataset-aware train-only command (without eval):
@@ -340,7 +340,7 @@ Dataset-aware train-only command (without eval):
 ```bash
 python scripts/train_any_dataset.py \
   --data /content/my_dataset.zip \
-  --config-file config_files/images/aeromixer_images_lite.yaml \
+  --config-file config_files/presets/lite.yaml \
   --output-dir output/colab_any \
   --epochs 3 \
   --batch-size 4 \
@@ -379,18 +379,36 @@ python scripts/freeze_dataset_version.py \
 Eval:
 
 ```bash
-python test_net.py --config-file config_files/images/aeromixer_images.yaml
+python test_net.py --config-file config_files/presets/full.yaml
 ```
 
 Image demo:
 
 ```bash
 python demo_image.py \
-  --config-file config_files/images/aeromixer_images.yaml \
+  --config-file config_files/presets/full.yaml \
   --image path/to/image.jpg \
   --output output/image_demo.png \
   --device cpu
 ```
+
+Integrated threshold tuning after eval:
+
+```bash
+python scripts/pipeline.py \
+  --mode eval \
+  --data "C:/path/to/dataset_or_zip" \
+  --preset prod \
+  --output-dir output/inference_prod \
+  --model-weight checkpoints/model_final.pth \
+  --tune-thresholds \
+  --threshold-grid 0.0,0.05,0.1,0.2,0.3
+```
+
+Outputs:
+- `<OUTPUT_DIR>/threshold_tuning.json`
+- `<OUTPUT_DIR>/pipeline_manifest.json` updated with best threshold summary
+- benchmark row append to `benchmarks/summary.csv`
 
 ## Configuration Cheat Sheet
 
@@ -485,3 +503,30 @@ See `LICENSE`.
 
 - Changelog: `CHANGELOG.md`
 - Benchmark table: `benchmarks/summary.csv`
+- Release checklist: `RELEASE_CHECKLIST.md`
+- Release tooling:
+  - `python scripts/release_tools.py check --version 0.5.0`
+  - `python scripts/release_tools.py tag --version 0.5.0 --dry-run`
+
+## Docker Inference
+
+Build:
+
+```bash
+docker build -t aeromixer:latest .
+```
+
+Run inference (contract):
+
+```bash
+docker run --rm -it \
+  -v /host/datasets:/data \
+  -v /host/runs:/work/output \
+  aeromixer:latest \
+  --data /data/aircraft_dataset \
+  --preset prod \
+  --output-dir /work/output/infer_run \
+  --model-weight /work/output/train_run/checkpoints/model_final.pth
+```
+
+See `docs/INFERENCE_CONTRACT.md` for full details.

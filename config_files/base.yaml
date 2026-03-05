@@ -1,6 +1,6 @@
 DATA:
   INPUT_TYPE: "image"
-  PATH_TO_DATA_DIR: "C:/Users/tsake/OneDrive/Desktop/one drive things/OneDrive/final dastaset for the project/merged_dataset"
+  PATH_TO_DATA_DIR: "data/aircraft"
   FRAME_DIR: ""
   # Use auto so loader can pick YOLO now; switch to custom_json once split JSON files are placed under
   # <PATH_TO_DATA_DIR>/json_splits or sibling json_splits.

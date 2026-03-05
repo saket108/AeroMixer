@@ -458,6 +458,9 @@ _C.TEST.SMALL_OPEN_WORLD = False
 _C.TEST.INDEPENDENT_EVAL = False
 _C.TEST.IOU_THRESH = 0.5
 _C.TEST.PRIOR_BOX_TEST = False
+_C.TEST.TILE_STITCH_EVAL = False
+_C.TEST.TILE_STITCH_NMS_IOU = 0.5
+_C.TEST.TILE_STITCH_GT_DEDUP_IOU = 0.9
 
 # ---------------------------------------------------------------------------- #
 # Misc options

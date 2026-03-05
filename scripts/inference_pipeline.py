@@ -19,9 +19,9 @@ import validate_dataset as vd
 
 
 PRESET_TO_CONFIG = {
-    "lite": "config_files/images/aeromixer_images_lite.yaml",
-    "full": "config_files/images/aeromixer_images.yaml",
-    "prod": "config_files/images/aeromixer_images_prod.yaml",
+    "lite": "config_files/presets/lite.yaml",
+    "full": "config_files/presets/full.yaml",
+    "prod": "config_files/presets/prod.yaml",
 }
 
 MAP50_KEYS = [

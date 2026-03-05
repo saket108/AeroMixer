@@ -4,11 +4,15 @@
 - `pipeline.py`: one-command professional pipeline (`prepare -> train -> eval`)
   - Presets: `lite`, `full`, `prod`
   - `prod` enables detector-only guardrails by default
+  - Auto-appends eval metrics to `benchmarks/summary.csv`
+  - Supports tiled runs with stitched full-image evaluation (`--tile-stitch-eval`)
+  - Supports integrated threshold sweep output (`--tune-thresholds`)
 - `train_any_dataset.py`: dataset-aware training launcher
 - `validate_dataset.py`: fail-fast dataset validation (`bad labels`, `split leakage`, `class stats`)
 - `inference_pipeline.py`: stable inference/eval entrypoint with JSON summary output
 - `freeze_dataset_version.py`: dataset fingerprint + validation manifest for reproducibility
 - `build_tiled_yolo_dataset.py`: tile YOLO datasets for small-object runs
+- `release_tools.py`: release readiness checks and annotated tag helper
 - `colab_bootstrap.sh`: Colab dependency bootstrap
 
 ## Archived research utilities

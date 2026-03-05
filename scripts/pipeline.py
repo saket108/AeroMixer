@@ -10,6 +10,7 @@ Modes:
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import json
 import os
@@ -20,7 +21,7 @@ import sys
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 import build_tiled_yolo_dataset as tiler
 import train_any_dataset as ds
@@ -28,10 +29,22 @@ import validate_dataset as vd
 
 
 PRESET_TO_CONFIG = {
-    "lite": "config_files/images/aeromixer_images_lite.yaml",
-    "full": "config_files/images/aeromixer_images.yaml",
-    "prod": "config_files/images/aeromixer_images_prod.yaml",
+    "lite": "config_files/presets/lite.yaml",
+    "full": "config_files/presets/full.yaml",
+    "prod": "config_files/presets/prod.yaml",
 }
+
+MAP50_KEYS = [
+    "PascalBoxes_Precision/mAP@0.5IOU",
+    "mAP@0.5",
+    "map50",
+]
+
+MAP5095_KEYS = [
+    "PascalBoxes_Precision/mAP@0.5:0.95IOU",
+    "mAP@0.5:0.95",
+    "map",
+]
 
 
 def _now_iso() -> str:
@@ -115,6 +128,146 @@ def _dataset_fingerprint(data_dir: Path, max_files: int = 50000) -> dict:
         "stat_errors": errors,
         "meta_sha256": hasher.hexdigest(),
     }
+
+
+def _parse_result_log(log_path: Path) -> dict[str, float | None]:
+    text = log_path.read_text(encoding="utf-8", errors="ignore")
+    kv = re.findall(r"'([^']+)':\s*([^,\n}]+)", text)
+    out: dict[str, float | None] = {}
+    for key, raw_value in kv:
+        value = raw_value.strip()
+        if value.startswith("np.float64(") and value.endswith(")"):
+            value = value[len("np.float64(") : -1].strip()
+        if value.lower() in {"nan", "none"}:
+            out[key] = None
+            continue
+        try:
+            out[key] = float(value)
+        except Exception:
+            continue
+    return out
+
+
+def _first_metric(metrics: dict[str, float | None], keys: list[str]) -> float | None:
+    for key in keys:
+        if key in metrics:
+            return metrics[key]
+    return None
+
+
+def _extract_eval_metrics(output_dir: Path) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for log_file in sorted(output_dir.glob("inference/*/result_image.log")):
+        dataset_name = log_file.parent.name
+        metrics = _parse_result_log(log_file)
+        out[dataset_name] = {
+            "log_file": str(log_file),
+            "map50": _first_metric(metrics, MAP50_KEYS),
+            "map5095": _first_metric(metrics, MAP5095_KEYS),
+            "small_ap": metrics.get("SmallObject/AP@0.5IOU"),
+            "metrics": metrics,
+        }
+    return out
+
+
+def _append_benchmark_rows(
+    root: Path,
+    manifest: dict[str, Any],
+    eval_metrics: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    bench_csv = root / "benchmarks" / "summary.csv"
+    bench_csv.parent.mkdir(parents=True, exist_ok=True)
+    if not bench_csv.exists():
+        bench_csv.write_text(
+            "date_utc,git_commit,model,preset,dataset,split,epochs,batch_size,image_scale,map50,map5095,small_ap,latency_ms_per_image,notes\n",
+            encoding="utf-8",
+        )
+
+    rows = []
+    date_utc = str(manifest.get("created_at_utc", _now_iso()))
+    git_commit = str(manifest.get("git_commit", ""))
+    preset = str(manifest.get("preset", ""))
+    epochs = manifest.get("epochs", "")
+    batch_size = manifest.get("batch_size", "")
+    dataset_fp = (
+        manifest.get("dataset_fingerprint", {}) or {}
+    ).get("meta_sha256", "")
+    notes = (
+        f"dataset_fp={dataset_fp};"
+        f"output_dir={manifest.get('dataset_plan', {}).get('data_dir', '')};"
+        f"run_output={manifest.get('commands', {}).get('eval', '')}"
+    )
+
+    for dataset_name, payload in sorted(eval_metrics.items()):
+        row = {
+            "date_utc": date_utc,
+            "git_commit": git_commit,
+            "model": "AeroMixer",
+            "preset": preset,
+            "dataset": dataset_name,
+            "split": "test",
+            "epochs": epochs,
+            "batch_size": batch_size,
+            "image_scale": "",
+            "map50": payload.get("map50"),
+            "map5095": payload.get("map5095"),
+            "small_ap": payload.get("small_ap"),
+            "latency_ms_per_image": "",
+            "notes": notes,
+        }
+        rows.append(row)
+
+    with open(bench_csv, "a", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "date_utc",
+                "git_commit",
+                "model",
+                "preset",
+                "dataset",
+                "split",
+                "epochs",
+                "batch_size",
+                "image_scale",
+                "map50",
+                "map5095",
+                "small_ap",
+                "latency_ms_per_image",
+                "notes",
+            ],
+        )
+        for row in rows:
+            writer.writerow(row)
+    return rows
+
+
+def _parse_float_grid(raw: str) -> list[float]:
+    vals = []
+    for token in str(raw).split(","):
+        s = token.strip()
+        if not s:
+            continue
+        vals.append(float(s))
+    if not vals:
+        raise ValueError("Threshold grid is empty.")
+    return vals
+
+
+def _threshold_tag(x: float) -> str:
+    return str(float(x)).replace(".", "p").replace("-", "m")
+
+
+def _aggregate_map50(eval_metrics: dict[str, dict[str, Any]]) -> float | None:
+    vals = []
+    for payload in eval_metrics.values():
+        v = payload.get("map50")
+        if v is None:
+            continue
+        vals.append(float(v))
+    if not vals:
+        return None
+    return float(sum(vals) / len(vals))
 
 
 def _prod_guardrail_opts() -> list[str]:
@@ -220,15 +373,105 @@ def _build_eval_cmd(
     num_workers: int,
     disable_guardrails: bool,
     model_weight: str | None,
+    tile_stitch_eval: bool,
+    tile_stitch_nms_iou: float,
+    tile_stitch_gt_dedup_iou: float,
     extra_opts: list[str],
 ) -> list[str]:
     cmd = [python_exe, "test_net.py", "--config-file", config_file]
     opts = _build_common_opts(plan, output_dir, num_workers, preset, disable_guardrails)
     opts.extend(["MODEL.WEIGHT", _resolve_eval_weight(Path(output_dir), model_weight)])
+    if tile_stitch_eval:
+        opts.extend(
+            [
+                "TEST.TILE_STITCH_EVAL",
+                "True",
+                "TEST.TILE_STITCH_NMS_IOU",
+                str(float(tile_stitch_nms_iou)),
+                "TEST.TILE_STITCH_GT_DEDUP_IOU",
+                str(float(tile_stitch_gt_dedup_iou)),
+            ]
+        )
     if extra_opts:
         opts.extend(extra_opts)
     cmd.extend(opts)
     return cmd
+
+
+def _run_threshold_tuning(
+    root: Path,
+    *,
+    python_exe: str,
+    config_file: str,
+    output_dir: str,
+    plan: ds.DatasetPlan,
+    preset: str,
+    num_workers: int,
+    disable_guardrails: bool,
+    model_weight: str | None,
+    tile_stitch_eval: bool,
+    tile_stitch_nms_iou: float,
+    tile_stitch_gt_dedup_iou: float,
+    base_extra_opts: list[str],
+    thresholds: list[float],
+    dry_run: bool,
+) -> dict[str, Any]:
+    rows = []
+    best = None
+    best_map50 = float("-inf")
+
+    for thr in thresholds:
+        sweep_dir = (
+            Path(output_dir)
+            / "threshold_sweeps"
+            / f"score_thr_{_threshold_tag(thr)}"
+        )
+        eval_opts = list(base_extra_opts) + ["MODEL.STM.SCORE_THRESHOLD", str(float(thr))]
+        cmd = _build_eval_cmd(
+            python_exe=python_exe,
+            config_file=config_file,
+            output_dir=str(sweep_dir),
+            plan=plan,
+            preset=preset,
+            num_workers=num_workers,
+            disable_guardrails=disable_guardrails,
+            model_weight=model_weight,
+            tile_stitch_eval=tile_stitch_eval,
+            tile_stitch_nms_iou=tile_stitch_nms_iou,
+            tile_stitch_gt_dedup_iou=tile_stitch_gt_dedup_iou,
+            extra_opts=eval_opts,
+        )
+        rc = _run_command(cmd, cwd=root, dry_run=dry_run)
+        if rc != 0:
+            rows.append(
+                {
+                    "score_threshold": float(thr),
+                    "return_code": int(rc),
+                    "map50_avg": None,
+                    "output_dir": str(sweep_dir),
+                }
+            )
+            continue
+
+        eval_metrics = {} if dry_run else _extract_eval_metrics(sweep_dir)
+        map50_avg = _aggregate_map50(eval_metrics)
+        row = {
+            "score_threshold": float(thr),
+            "return_code": int(rc),
+            "map50_avg": map50_avg,
+            "output_dir": str(sweep_dir),
+            "datasets": eval_metrics,
+        }
+        rows.append(row)
+        if map50_avg is not None and map50_avg > best_map50:
+            best_map50 = map50_avg
+            best = row
+
+    return {
+        "thresholds": [float(x) for x in thresholds],
+        "rows": rows,
+        "best": best,
+    }
 
 
 def _run_command(cmd: list[str], cwd: Path, dry_run: bool) -> int:
@@ -283,6 +526,30 @@ def _parse_args() -> argparse.Namespace:
         help="Keep tiles with no labels.",
     )
     p.add_argument(
+        "--tile-stitch-eval",
+        dest="tile_stitch_eval",
+        action="store_true",
+        help="When tiling is enabled, stitch tile predictions back to full images before evaluation.",
+    )
+    p.add_argument(
+        "--no-tile-stitch-eval",
+        dest="tile_stitch_eval",
+        action="store_false",
+        help="Disable tile-stitch evaluation even when tiling is enabled.",
+    )
+    p.add_argument(
+        "--tile-stitch-nms-iou",
+        type=float,
+        default=0.5,
+        help="Global NMS IoU used for stitched full-image predictions.",
+    )
+    p.add_argument(
+        "--tile-stitch-gt-dedup-iou",
+        type=float,
+        default=0.9,
+        help="IoU threshold used to deduplicate stitched GT boxes from overlapping tiles.",
+    )
+    p.add_argument(
         "--skip-validation",
         action="store_true",
         help="Skip dataset quality validation.",
@@ -301,6 +568,16 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--model-weight", default=None, help="Optional weight for eval mode."
     )
+    p.add_argument(
+        "--tune-thresholds",
+        action="store_true",
+        help="Run post-eval score-threshold sweep and save threshold_tuning.json.",
+    )
+    p.add_argument(
+        "--threshold-grid",
+        default="0.0,0.05,0.1,0.2,0.3",
+        help="Comma-separated MODEL.STM.SCORE_THRESHOLD values for tuning.",
+    )
     p.add_argument("--dry-run", action="store_true")
     p.add_argument(
         "--extra-opts",
@@ -308,6 +585,7 @@ def _parse_args() -> argparse.Namespace:
         default=[],
         help="Extra config key/value pairs for train/eval.",
     )
+    p.set_defaults(tile_stitch_eval=True)
     return p.parse_args()
 
 
@@ -371,6 +649,8 @@ def main() -> int:
             _write_json(tiling_report_path, tiling_report)
             print(f"Tiling report: {tiling_report_path}")
 
+    tile_stitch_enabled = bool(int(args.tile_size) > 0 and args.tile_stitch_eval)
+
     manifest_path = Path(output_dir) / "pipeline_manifest.json"
     validation_report_path = Path(output_dir) / "dataset_validation.json"
     plan_dict = asdict(plan)
@@ -397,6 +677,9 @@ def main() -> int:
             "tile_min_cover": float(args.tile_min_cover),
             "tile_splits": args.tile_splits,
             "include_empty_tiles": bool(args.include_empty_tiles),
+            "tile_stitch_eval": bool(tile_stitch_enabled),
+            "tile_stitch_nms_iou": float(args.tile_stitch_nms_iou),
+            "tile_stitch_gt_dedup_iou": float(args.tile_stitch_gt_dedup_iou),
             "report_path": (
                 str(tiling_report_path)
                 if (int(args.tile_size) > 0 and not args.dry_run)
@@ -409,9 +692,14 @@ def main() -> int:
         "guardrails_enabled": bool(
             args.preset == "prod" and not args.disable_guardrails
         ),
+        "threshold_tuning": {
+            "enabled": bool(args.tune_thresholds),
+            "threshold_grid": args.threshold_grid,
+        },
         "dry_run": bool(args.dry_run),
         "extra_opts": list(args.extra_opts),
     }
+    threshold_grid = _parse_float_grid(args.threshold_grid) if args.tune_thresholds else []
 
     train_cmd = _build_train_cmd(
         python_exe=sys.executable,
@@ -435,6 +723,9 @@ def main() -> int:
         num_workers=args.num_workers,
         disable_guardrails=args.disable_guardrails,
         model_weight=args.model_weight,
+        tile_stitch_eval=tile_stitch_enabled,
+        tile_stitch_nms_iou=float(args.tile_stitch_nms_iou),
+        tile_stitch_gt_dedup_iou=float(args.tile_stitch_gt_dedup_iou),
         extra_opts=list(args.extra_opts),
     )
 
@@ -504,6 +795,52 @@ def main() -> int:
         rc = _run_command(eval_cmd, cwd=root, dry_run=args.dry_run)
         if rc != 0:
             return rc
+        if not args.dry_run:
+            eval_metrics = _extract_eval_metrics(Path(output_dir))
+            manifest["eval_metrics"] = eval_metrics
+            if eval_metrics:
+                bench_rows = _append_benchmark_rows(root, manifest, eval_metrics)
+                manifest["benchmark_rows_appended"] = bench_rows
+                print(f"Benchmark rows appended: {len(bench_rows)}")
+            else:
+                manifest["benchmark_rows_appended"] = []
+            _write_json(manifest_path, manifest)
+
+        if args.tune_thresholds:
+            tuning_summary = _run_threshold_tuning(
+                root=root,
+                python_exe=sys.executable,
+                config_file=config_file,
+                output_dir=output_dir,
+                plan=plan,
+                preset=args.preset,
+                num_workers=args.num_workers,
+                disable_guardrails=args.disable_guardrails,
+                model_weight=args.model_weight,
+                tile_stitch_eval=tile_stitch_enabled,
+                tile_stitch_nms_iou=float(args.tile_stitch_nms_iou),
+                tile_stitch_gt_dedup_iou=float(args.tile_stitch_gt_dedup_iou),
+                base_extra_opts=list(args.extra_opts),
+                thresholds=threshold_grid,
+                dry_run=args.dry_run,
+            )
+            tuning_path = Path(output_dir) / "threshold_tuning.json"
+            if not args.dry_run:
+                _write_json(tuning_path, tuning_summary)
+            manifest["threshold_tuning"] = {
+                "enabled": True,
+                "grid": threshold_grid,
+                "best": tuning_summary.get("best"),
+                "summary_path": (None if args.dry_run else str(tuning_path)),
+            }
+            if not args.dry_run:
+                _write_json(manifest_path, manifest)
+            best = tuning_summary.get("best")
+            if isinstance(best, dict):
+                print(
+                    "Threshold tuning best: "
+                    f"score_threshold={best.get('score_threshold')} map50_avg={best.get('map50_avg')}"
+                )
 
     return 0
 
