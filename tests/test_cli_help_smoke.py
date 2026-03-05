@@ -55,6 +55,9 @@ class TestCliHelpSmoke(unittest.TestCase):
     def test_freeze_dataset_version_help(self):
         self._run_help("scripts/freeze_dataset_version.py")
 
+    def test_build_tiled_dataset_help(self):
+        self._run_help("scripts/build_tiled_yolo_dataset.py")
+
 
 if __name__ == "__main__":
     unittest.main()

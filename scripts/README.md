@@ -8,6 +8,7 @@
 - `validate_dataset.py`: fail-fast dataset validation (`bad labels`, `split leakage`, `class stats`)
 - `inference_pipeline.py`: stable inference/eval entrypoint with JSON summary output
 - `freeze_dataset_version.py`: dataset fingerprint + validation manifest for reproducibility
+- `build_tiled_yolo_dataset.py`: tile YOLO datasets for small-object runs
 - `colab_bootstrap.sh`: Colab dependency bootstrap
 
 ## Archived research utilities

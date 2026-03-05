@@ -9,6 +9,8 @@ All notable changes to this project are documented in this file.
 - Dataset version freezing: `scripts/freeze_dataset_version.py`
 - Pre-commit configuration: `.pre-commit-config.yaml`
 - Benchmark tracking scaffold: `benchmarks/summary.csv`, `benchmarks/README.md`
+- YOLO tiling utility for small-object workflows: `scripts/build_tiled_yolo_dataset.py`
+- Pipeline tiling flags (`--tile-size`, `--tile-overlap`, `--tile-min-cover`, `--tile-splits`)
 
 ## [0.4.0] - 2026-03-05
 

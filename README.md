@@ -304,6 +304,26 @@ Preset guide:
 - `full`: research-heavy default
 - `prod`: detector-only guarded profile (open-vocab/severity/telemetry disabled by default)
 
+Small-object tiling (train + eval in one run):
+
+```bash
+python scripts/pipeline.py \
+  --mode run \
+  --data "C:/path/to/dataset_or_zip" \
+  --preset prod \
+  --output-dir output/my_run_tiled \
+  --epochs 30 \
+  --batch-size 4 \
+  --tile-size 640 \
+  --tile-overlap 0.2 \
+  --tile-min-cover 0.35 \
+  --tile-splits train,val,test
+```
+
+This writes:
+- `<OUTPUT_DIR>/tiling_report.json`
+- tiled working dataset under `output/_auto_data_prep/tiled_datasets/...`
+
 Validation behavior:
 - `scripts/pipeline.py` validates dataset integrity before training by default.
 - If validation fails, pipeline stops early.

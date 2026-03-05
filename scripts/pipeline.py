@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -21,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
+import build_tiled_yolo_dataset as tiler
 import train_any_dataset as ds
 import validate_dataset as vd
 
@@ -256,6 +258,31 @@ def _parse_args() -> argparse.Namespace:
         "--split-ratio", default=None, help="Only for flat YOLO datasets. e.g. 80,10,10"
     )
     p.add_argument(
+        "--tile-size", type=int, default=0, help="Enable YOLO tiling when > 0."
+    )
+    p.add_argument(
+        "--tile-overlap",
+        type=float,
+        default=0.2,
+        help="Tile overlap ratio in [0, 1).",
+    )
+    p.add_argument(
+        "--tile-min-cover",
+        type=float,
+        default=0.35,
+        help="Min GT box coverage ratio to keep in a tile.",
+    )
+    p.add_argument(
+        "--tile-splits",
+        default="train,val,test",
+        help="Comma-separated splits to tile (train,val,test). Non-selected splits are copied.",
+    )
+    p.add_argument(
+        "--include-empty-tiles",
+        action="store_true",
+        help="Keep tiles with no labels.",
+    )
+    p.add_argument(
         "--skip-validation",
         action="store_true",
         help="Skip dataset quality validation.",
@@ -294,6 +321,55 @@ def main() -> int:
     source_path = ds._resolve_source_path(Path(args.data).expanduser().resolve(), work)
     ratio = ds._parse_split_ratio(args.split_ratio) if args.split_ratio else None
     plan = ds._build_plan(source_path, ratio, args.seed, work)
+    tiling_report_path = Path(output_dir) / "tiling_report.json"
+    tiling_report = None
+
+    if int(args.tile_size) > 0:
+        if str(plan.annotation_format).lower() != "yolo":
+            print("Tiling currently supports YOLO datasets only.")
+            print(f"Resolved annotation_format='{plan.annotation_format}'")
+            return 2
+
+        tile_splits = tiler._parse_splits(args.tile_splits)
+        tile_tag = re.sub(r"[^A-Za-z0-9_.-]+", "_", Path(output_dir).name) or "run"
+        tiled_data_dir = (
+            work
+            / "tiled_datasets"
+            / f"{tile_tag}_ts{int(args.tile_size)}_ov{str(args.tile_overlap).replace('.', 'p')}"
+        )
+
+        if args.dry_run:
+            print("Tiling requested: dry-run mode skips tile materialization.")
+            print(f"Planned tiled dataset dir: {tiled_data_dir}")
+            tiling_report = {
+                "planned_only": True,
+                "source_data_dir": str(plan.data_dir),
+                "output_data_dir": str(tiled_data_dir),
+                "tile_size": int(args.tile_size),
+                "overlap": float(args.tile_overlap),
+                "min_cover": float(args.tile_min_cover),
+                "tile_splits": tile_splits,
+                "include_empty_tiles": bool(args.include_empty_tiles),
+            }
+        else:
+            tiling_report = tiler.build_tiled_dataset(
+                data_dir=Path(plan.data_dir),
+                frame_dir=str(plan.frame_dir),
+                out_dir=tiled_data_dir,
+                tile_size=int(args.tile_size),
+                overlap=float(args.tile_overlap),
+                min_cover=float(args.tile_min_cover),
+                tile_splits=tile_splits,
+                include_empty_tiles=bool(args.include_empty_tiles),
+            )
+            plan = ds.DatasetPlan(
+                data_dir=Path(tiling_report["output_data_dir"]),
+                annotation_format="yolo",
+                frame_dir="",
+                num_classes=int(plan.num_classes),
+            )
+            _write_json(tiling_report_path, tiling_report)
+            print(f"Tiling report: {tiling_report_path}")
 
     manifest_path = Path(output_dir) / "pipeline_manifest.json"
     validation_report_path = Path(output_dir) / "dataset_validation.json"
@@ -314,6 +390,19 @@ def main() -> int:
         "num_workers": args.num_workers,
         "seed": args.seed,
         "split_ratio": args.split_ratio,
+        "tiling": {
+            "enabled": bool(int(args.tile_size) > 0),
+            "tile_size": int(args.tile_size),
+            "tile_overlap": float(args.tile_overlap),
+            "tile_min_cover": float(args.tile_min_cover),
+            "tile_splits": args.tile_splits,
+            "include_empty_tiles": bool(args.include_empty_tiles),
+            "report_path": (
+                str(tiling_report_path)
+                if (int(args.tile_size) > 0 and not args.dry_run)
+                else None
+            ),
+        },
         "skip_validation": bool(args.skip_validation),
         "allow_validation_errors": bool(args.allow_validation_errors),
         "skip_val_in_train": bool(args.skip_val_in_train),
@@ -353,6 +442,8 @@ def main() -> int:
         "train": _stringify_cmd(train_cmd),
         "eval": _stringify_cmd(eval_cmd),
     }
+    if tiling_report is not None:
+        manifest["tiling_report"] = tiling_report
 
     validation = None
     if not args.skip_validation:

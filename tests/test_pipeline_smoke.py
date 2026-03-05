@@ -78,6 +78,49 @@ class TestPipelineSmoke(unittest.TestCase):
             self.assertTrue(manifest_data["validation"]["enabled"])
             self.assertTrue(manifest_data["validation"]["ok"])
 
+    def test_pipeline_dry_run_accepts_tiling_options(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            data_dir = _build_tiny_dataset(tmp, invalid_train_box=False)
+            out_dir = tmp / "run_tile"
+
+            cmd = [
+                sys.executable,
+                str(ROOT / "scripts" / "pipeline.py"),
+                "--mode",
+                "run",
+                "--data",
+                str(data_dir),
+                "--preset",
+                "lite",
+                "--output-dir",
+                str(out_dir),
+                "--dry-run",
+                "--tile-size",
+                "32",
+                "--tile-overlap",
+                "0.25",
+                "--tile-min-cover",
+                "0.3",
+                "--tile-splits",
+                "train,val,test",
+            ]
+            result = subprocess.run(
+                cmd, cwd=str(ROOT), capture_output=True, text=True, timeout=180
+            )
+            self.assertEqual(
+                result.returncode,
+                0,
+                msg=f"pipeline tiling dry-run failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+            )
+
+            manifest = out_dir / "pipeline_manifest.json"
+            self.assertTrue(manifest.exists(), f"missing {manifest}")
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            self.assertIn("tiling", data)
+            self.assertTrue(data["tiling"]["enabled"])
+            self.assertEqual(int(data["tiling"]["tile_size"]), 32)
+
     def test_pipeline_fails_on_invalid_dataset_by_default(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp = Path(tmp_dir)
