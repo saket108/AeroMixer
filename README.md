@@ -247,6 +247,12 @@ Install:
 pip install -r requirements.txt
 ```
 
+Reproducible install (recommended):
+
+```bash
+pip install -r requirements_lock.txt
+```
+
 Colab quickstart (2-command setup):
 
 ```bash

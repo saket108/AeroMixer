@@ -31,7 +31,13 @@ def _norm_key(path: Path) -> str:
 
 
 def _iter_images(root: Path) -> list[Path]:
-    return sorted([p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in VALID_IMAGE_EXTS])
+    return sorted(
+        [
+            p
+            for p in root.rglob("*")
+            if p.is_file() and p.suffix.lower() in VALID_IMAGE_EXTS
+        ]
+    )
 
 
 def _iter_labels(root: Path) -> list[Path]:
@@ -43,7 +49,11 @@ def _detect_yolo_layout(data_dir: Path, frame_dir: str) -> str:
         return "split_first"
 
     frame_root = data_dir / frame_dir if frame_dir else data_dir / "images"
-    if frame_root.is_dir() and (frame_root / "train").is_dir() and (data_dir / "labels" / "train").is_dir():
+    if (
+        frame_root.is_dir()
+        and (frame_root / "train").is_dir()
+        and (data_dir / "labels" / "train").is_dir()
+    ):
         return "images_first"
 
     if (data_dir / "images").is_dir() and (data_dir / "labels").is_dir():
@@ -116,7 +126,11 @@ def _validate_yolo_split(
     image_map = {_norm_key(p.relative_to(image_dir)): p for p in images}
 
     labels: list[Path] = _iter_labels(label_dir) if label_dir is not None else []
-    label_map = {_norm_key(p.relative_to(label_dir)): p for p in labels} if label_dir is not None else {}
+    label_map = (
+        {_norm_key(p.relative_to(label_dir)): p for p in labels}
+        if label_dir is not None
+        else {}
+    )
 
     image_keys = set(image_map.keys())
     label_keys = set(label_map.keys())
@@ -180,10 +194,17 @@ def _validate_yolo_split(
                 if len(example_issues) < 10:
                     example_issues.append(f"{label_path}:{ln} non-finite bbox values")
                 continue
-            if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0 and 0.0 < w <= 1.0 and 0.0 < h <= 1.0):
+            if not (
+                0.0 <= x <= 1.0
+                and 0.0 <= y <= 1.0
+                and 0.0 < w <= 1.0
+                and 0.0 < h <= 1.0
+            ):
                 bad_boxes += 1
                 if len(example_issues) < 10:
-                    example_issues.append(f"{label_path}:{ln} bbox out of normalized range")
+                    example_issues.append(
+                        f"{label_path}:{ln} bbox out of normalized range"
+                    )
                 continue
 
             valid_boxes += 1
@@ -242,14 +263,18 @@ def _validate_yolo_dataset(plan: ds.DatasetPlan) -> dict[str, Any]:
 
     split_summaries: dict[str, dict[str, Any]] = {}
     for split in ["train", "val", "test"]:
-        image_dir, label_dir, _ = _resolve_split_dirs(data_dir, plan.frame_dir, layout, split)
+        image_dir, label_dir, _ = _resolve_split_dirs(
+            data_dir, plan.frame_dir, layout, split
+        )
         if image_dir is None:
             if split == "train":
                 errors.append("Training split directory not found.")
             else:
                 warnings.append(f"Split '{split}' directory not found.")
             continue
-        split_summary = _validate_yolo_split(split, image_dir, label_dir, max(1, int(plan.num_classes)))
+        split_summary = _validate_yolo_split(
+            split, image_dir, label_dir, max(1, int(plan.num_classes))
+        )
         split_summaries[split] = split_summary
 
         if split == "train":
@@ -257,14 +282,20 @@ def _validate_yolo_dataset(plan: ds.DatasetPlan) -> dict[str, Any]:
                 errors.append("Training split has zero images.")
             if split_summary["valid_boxes"] == 0:
                 errors.append("Training split has zero valid boxes.")
-        if split_summary["bad_lines"] > 0 or split_summary["bad_boxes"] > 0 or split_summary["bad_class_ids"] > 0:
+        if (
+            split_summary["bad_lines"] > 0
+            or split_summary["bad_boxes"] > 0
+            or split_summary["bad_class_ids"] > 0
+        ):
             errors.append(
                 f"Split '{split}' has invalid labels "
                 f"(bad_lines={split_summary['bad_lines']}, bad_boxes={split_summary['bad_boxes']}, "
                 f"bad_class_ids={split_summary['bad_class_ids']})."
             )
         if split_summary["orphan_label_files"] > 0:
-            errors.append(f"Split '{split}' has orphan label files (no matching image).")
+            errors.append(
+                f"Split '{split}' has orphan label files (no matching image)."
+            )
         if split_summary["missing_label_files"] > 0:
             warnings.append(
                 f"Split '{split}' has {split_summary['missing_label_files']} images without labels "
@@ -300,7 +331,9 @@ def _validate_yolo_dataset(plan: ds.DatasetPlan) -> dict[str, Any]:
         imbalance_ratio = 0.0
         warnings.append("No non-zero class counts found in parsed labels.")
     if imbalance_ratio > 20.0:
-        warnings.append(f"Severe class imbalance detected (max/min positive count ratio = {imbalance_ratio:.2f}).")
+        warnings.append(
+            f"Severe class imbalance detected (max/min positive count ratio = {imbalance_ratio:.2f})."
+        )
 
     # Remove internal helper keys before serialization.
     for split_summary in split_summaries.values():
@@ -318,7 +351,12 @@ def _validate_yolo_dataset(plan: ds.DatasetPlan) -> dict[str, Any]:
         "leakage": {k: len(v) for k, v in leaks.items()},
     }
 
-    return {"ok": len(errors) == 0, "errors": errors, "warnings": warnings, "summary": summary}
+    return {
+        "ok": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+        "summary": summary,
+    }
 
 
 def _validate_generic_json_dataset(plan: ds.DatasetPlan) -> dict[str, Any]:
@@ -331,9 +369,14 @@ def _validate_generic_json_dataset(plan: ds.DatasetPlan) -> dict[str, Any]:
     if not json_files:
         return {
             "ok": False,
-            "errors": [f"No JSON files found under {data_dir} for annotation format '{plan.annotation_format}'."],
+            "errors": [
+                f"No JSON files found under {data_dir} for annotation format '{plan.annotation_format}'."
+            ],
             "warnings": [],
-            "summary": {"annotation_format": plan.annotation_format, "data_dir": str(data_dir)},
+            "summary": {
+                "annotation_format": plan.annotation_format,
+                "data_dir": str(data_dir),
+            },
         }
 
     parsed_any = False
@@ -346,7 +389,11 @@ def _validate_generic_json_dataset(plan: ds.DatasetPlan) -> dict[str, Any]:
         if not isinstance(data, dict):
             continue
 
-        if plan.annotation_format == "coco" and "images" in data and "annotations" in data:
+        if (
+            plan.annotation_format == "coco"
+            and "images" in data
+            and "annotations" in data
+        ):
             parsed_any = True
             summaries.append(
                 {
@@ -356,7 +403,9 @@ def _validate_generic_json_dataset(plan: ds.DatasetPlan) -> dict[str, Any]:
                     "num_categories": len(data.get("categories", [])),
                 }
             )
-        elif plan.annotation_format == "custom_json" and isinstance(data.get("images"), list):
+        elif plan.annotation_format == "custom_json" and isinstance(
+            data.get("images"), list
+        ):
             parsed_any = True
             num_anns = 0
             for rec in data.get("images", []):
@@ -364,19 +413,33 @@ def _validate_generic_json_dataset(plan: ds.DatasetPlan) -> dict[str, Any]:
                     anns = rec.get("annotations", [])
                     if isinstance(anns, list):
                         num_anns += len(anns)
-            summaries.append({"file": str(path), "num_images": len(data.get("images", [])), "num_annotations": num_anns})
+            summaries.append(
+                {
+                    "file": str(path),
+                    "num_images": len(data.get("images", [])),
+                    "num_annotations": num_anns,
+                }
+            )
 
     if not parsed_any:
-        errors.append(f"Could not parse any JSON matching annotation format '{plan.annotation_format}'.")
+        errors.append(
+            f"Could not parse any JSON matching annotation format '{plan.annotation_format}'."
+        )
 
     if len(summaries) > 1:
-        warnings.append("Multiple JSON annotation files detected; ensure split routing is intentional.")
+        warnings.append(
+            "Multiple JSON annotation files detected; ensure split routing is intentional."
+        )
 
     return {
         "ok": len(errors) == 0,
         "errors": errors,
         "warnings": warnings,
-        "summary": {"annotation_format": plan.annotation_format, "data_dir": str(data_dir), "json_files": summaries},
+        "summary": {
+            "annotation_format": plan.annotation_format,
+            "data_dir": str(data_dir),
+            "json_files": summaries,
+        },
     }
 
 
@@ -389,18 +452,34 @@ def validate_dataset_plan(plan: ds.DatasetPlan) -> dict[str, Any]:
     return {
         "ok": True,
         "errors": [],
-        "warnings": [f"No deep validator implemented for annotation format '{fmt}'. Skipped."],
+        "warnings": [
+            f"No deep validator implemented for annotation format '{fmt}'. Skipped."
+        ],
         "summary": {"annotation_format": fmt, "data_dir": str(plan.data_dir)},
     }
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Validate dataset quality for AeroMixer pipeline.")
-    p.add_argument("--data", required=True, help="Dataset source path: zip, folder, data.yaml, or json.")
+    p = argparse.ArgumentParser(
+        description="Validate dataset quality for AeroMixer pipeline."
+    )
+    p.add_argument(
+        "--data",
+        required=True,
+        help="Dataset source path: zip, folder, data.yaml, or json.",
+    )
     p.add_argument("--seed", type=int, default=2)
-    p.add_argument("--split-ratio", default=None, help="Only for flat YOLO datasets. e.g. 80,10,10")
-    p.add_argument("--report-out", default=None, help="Optional JSON path for validation report.")
-    p.add_argument("--allow-errors", action="store_true", help="Exit zero even when validation fails.")
+    p.add_argument(
+        "--split-ratio", default=None, help="Only for flat YOLO datasets. e.g. 80,10,10"
+    )
+    p.add_argument(
+        "--report-out", default=None, help="Optional JSON path for validation report."
+    )
+    p.add_argument(
+        "--allow-errors",
+        action="store_true",
+        help="Exit zero even when validation fails.",
+    )
     return p.parse_args()
 
 
@@ -410,7 +489,9 @@ def main() -> int:
     work_dir = repo_root / "output" / "_auto_data_prep"
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    source_path = ds._resolve_source_path(Path(args.data).expanduser().resolve(), work_dir)
+    source_path = ds._resolve_source_path(
+        Path(args.data).expanduser().resolve(), work_dir
+    )
     ratio = ds._parse_split_ratio(args.split_ratio) if args.split_ratio else None
     plan = ds._build_plan(source_path, ratio, args.seed, work_dir)
 
@@ -426,13 +507,17 @@ def main() -> int:
     if args.report_out:
         out = Path(args.report_out)
     else:
-        out = repo_root / "output" / "_auto_data_prep" / "dataset_validation_report.json"
+        out = (
+            repo_root / "output" / "_auto_data_prep" / "dataset_validation_report.json"
+        )
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
 
     print(f"Validation report: {out}")
-    print(f"ok={report['ok']} errors={len(report['errors'])} warnings={len(report['warnings'])}")
+    print(
+        f"ok={report['ok']} errors={len(report['errors'])} warnings={len(report['warnings'])}"
+    )
     if report["errors"]:
         for e in report["errors"][:10]:
             print(f"ERROR: {e}")

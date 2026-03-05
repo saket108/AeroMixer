@@ -10,7 +10,9 @@ Modes:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -52,6 +54,65 @@ def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
+
+
+def _git_commit(root: Path) -> str | None:
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=str(root), text=True
+        )
+        return out.strip()
+    except Exception:
+        return None
+
+
+def _dataset_fingerprint(data_dir: Path, max_files: int = 50000) -> dict:
+    if not data_dir.exists():
+        return {
+            "exists": False,
+            "num_files_scanned": 0,
+            "total_bytes_scanned": 0,
+            "truncated": False,
+            "meta_sha256": None,
+        }
+
+    hasher = hashlib.sha256()
+    file_count = 0
+    total_bytes = 0
+    truncated = False
+    errors = 0
+
+    for dirpath, dirnames, filenames in os.walk(str(data_dir)):
+        dirnames.sort()
+        filenames.sort()
+        for name in filenames:
+            path = Path(dirpath) / name
+            try:
+                st = path.stat()
+            except Exception:
+                errors += 1
+                continue
+            rel = path.relative_to(data_dir).as_posix()
+            hasher.update(rel.encode("utf-8", errors="ignore"))
+            hasher.update(str(int(st.st_size)).encode("ascii", errors="ignore"))
+            hasher.update(str(int(st.st_mtime_ns)).encode("ascii", errors="ignore"))
+            file_count += 1
+            total_bytes += int(st.st_size)
+            if file_count >= max_files:
+                truncated = True
+                break
+        if truncated:
+            break
+
+    return {
+        "exists": True,
+        "num_files_scanned": file_count,
+        "total_bytes_scanned": total_bytes,
+        "truncated": truncated,
+        "max_files": max_files,
+        "stat_errors": errors,
+        "meta_sha256": hasher.hexdigest(),
+    }
 
 
 def _prod_guardrail_opts() -> list[str]:
@@ -179,16 +240,26 @@ def _run_command(cmd: list[str], cwd: Path, dry_run: bool) -> int:
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="AeroMixer one-command pipeline.")
     p.add_argument("--mode", choices=["train", "eval", "run"], default="run")
-    p.add_argument("--data", required=True, help="Dataset path: zip/folder/data.yaml/json")
+    p.add_argument(
+        "--data", required=True, help="Dataset path: zip/folder/data.yaml/json"
+    )
     p.add_argument("--preset", choices=["lite", "full", "prod"], default="lite")
-    p.add_argument("--config-file", default=None, help="Optional override for preset config.")
+    p.add_argument(
+        "--config-file", default=None, help="Optional override for preset config."
+    )
     p.add_argument("--output-dir", default="output/pipeline_run")
     p.add_argument("--epochs", type=int, default=3)
     p.add_argument("--batch-size", type=int, default=4)
     p.add_argument("--num-workers", type=int, default=2)
     p.add_argument("--seed", type=int, default=2)
-    p.add_argument("--split-ratio", default=None, help="Only for flat YOLO datasets. e.g. 80,10,10")
-    p.add_argument("--skip-validation", action="store_true", help="Skip dataset quality validation.")
+    p.add_argument(
+        "--split-ratio", default=None, help="Only for flat YOLO datasets. e.g. 80,10,10"
+    )
+    p.add_argument(
+        "--skip-validation",
+        action="store_true",
+        help="Skip dataset quality validation.",
+    )
     p.add_argument(
         "--allow-validation-errors",
         action="store_true",
@@ -200,7 +271,9 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable preset guardrails (advanced). In prod preset, guardrails are enabled by default.",
     )
-    p.add_argument("--model-weight", default=None, help="Optional weight for eval mode.")
+    p.add_argument(
+        "--model-weight", default=None, help="Optional weight for eval mode."
+    )
     p.add_argument("--dry-run", action="store_true")
     p.add_argument(
         "--extra-opts",
@@ -229,11 +302,13 @@ def main() -> int:
 
     manifest = {
         "created_at_utc": _now_iso(),
+        "git_commit": _git_commit(root),
         "mode": args.mode,
         "preset": args.preset,
         "config_file": config_file,
         "dataset_source": str(source_path),
         "dataset_plan": plan_dict,
+        "dataset_fingerprint": _dataset_fingerprint(Path(plan.data_dir)),
         "epochs": args.epochs,
         "batch_size": args.batch_size,
         "num_workers": args.num_workers,
@@ -242,7 +317,9 @@ def main() -> int:
         "skip_validation": bool(args.skip_validation),
         "allow_validation_errors": bool(args.allow_validation_errors),
         "skip_val_in_train": bool(args.skip_val_in_train),
-        "guardrails_enabled": bool(args.preset == "prod" and not args.disable_guardrails),
+        "guardrails_enabled": bool(
+            args.preset == "prod" and not args.disable_guardrails
+        ),
         "dry_run": bool(args.dry_run),
         "extra_opts": list(args.extra_opts),
     }
@@ -300,10 +377,14 @@ def main() -> int:
 
     manifest["validation"] = {
         "enabled": not bool(args.skip_validation),
-        "report_path": str(validation_report_path) if not args.skip_validation else None,
+        "report_path": (
+            str(validation_report_path) if not args.skip_validation else None
+        ),
         "ok": (None if args.skip_validation else bool(validation["ok"])),
         "error_count": (None if args.skip_validation else len(validation["errors"])),
-        "warning_count": (None if args.skip_validation else len(validation["warnings"])),
+        "warning_count": (
+            None if args.skip_validation else len(validation["warnings"])
+        ),
     }
 
     _write_json(manifest_path, manifest)
@@ -314,7 +395,11 @@ def main() -> int:
     print(f"  frame_dir         : {plan.frame_dir!r}")
     print(f"  num_classes       : {plan.num_classes}")
 
-    if validation is not None and (not validation["ok"]) and (not args.allow_validation_errors):
+    if (
+        validation is not None
+        and (not validation["ok"])
+        and (not args.allow_validation_errors)
+    ):
         print("Dataset validation failed. Aborting pipeline.")
         print("Use --allow-validation-errors to continue anyway.")
         return 2

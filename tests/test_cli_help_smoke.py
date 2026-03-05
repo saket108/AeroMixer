@@ -43,6 +43,12 @@ class TestCliHelpSmoke(unittest.TestCase):
     def test_run_baseline_benchmarks_help(self):
         self._run_help("scripts/run_baseline_benchmarks.py")
 
+    def test_pipeline_help(self):
+        self._run_help("scripts/pipeline.py")
+
+    def test_validate_dataset_help(self):
+        self._run_help("scripts/validate_dataset.py")
+
 
 if __name__ == "__main__":
     unittest.main()

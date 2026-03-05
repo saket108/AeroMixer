@@ -25,8 +25,8 @@ jobs:
 
          pip install torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cpu
 
-         # remove CLIP from requirements
-         sed '/CLIP.git/d' requirements.txt > reqs.txt
+         # remove CLIP from lock file (install separately for reliability)
+         sed '/CLIP.git/d' requirements_lock.txt > reqs.txt
          pip install -r reqs.txt
 
          # manual CLIP install (reliable method)
@@ -35,7 +35,14 @@ jobs:
          python setup.py install
          cd ..
 
+         # static quality tools
+         pip install ruff==0.6.9 black==24.8.0
 
+
+      - name: Lint and format gates
+        run: |
+          ruff check scripts tests train_net.py test_net.py demo_image.py preprocess/build_open_vocab.py --select F,E9
+          black --check scripts/pipeline.py scripts/train_any_dataset.py scripts/validate_dataset.py tests/test_pipeline_smoke.py tests/test_cli_help_smoke.py
 
 
       - name: Compile smoke check

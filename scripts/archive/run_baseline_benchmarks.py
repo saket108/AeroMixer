@@ -15,7 +15,7 @@ import math
 import os
 import subprocess
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 
 MAP50_KEYS = [

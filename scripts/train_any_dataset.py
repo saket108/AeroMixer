@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import random
 import shutil
 import subprocess
@@ -36,7 +35,9 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     try:
         import yaml  # type: ignore
     except Exception as e:  # pragma: no cover
-        raise RuntimeError("PyYAML is required. Install with: pip install pyyaml") from e
+        raise RuntimeError(
+            "PyYAML is required. Install with: pip install pyyaml"
+        ) from e
 
     with open(path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
@@ -128,7 +129,11 @@ def _is_split_layout_images_train(root: Path) -> bool:
 
 
 def _is_flat_yolo_layout(root: Path) -> bool:
-    return (root / "images").is_dir() and (root / "labels").is_dir() and not _is_split_layout_images_train(root)
+    return (
+        (root / "images").is_dir()
+        and (root / "labels").is_dir()
+        and not _is_split_layout_images_train(root)
+    )
 
 
 def _infer_format_from_json(json_path: Path) -> str:
@@ -158,9 +163,17 @@ def _create_split_from_flat_yolo(
     images_dir = dataset_root / "images"
     labels_dir = dataset_root / "labels"
     if not images_dir.is_dir() or not labels_dir.is_dir():
-        raise FileNotFoundError("Flat YOLO split creation expects <root>/images and <root>/labels.")
+        raise FileNotFoundError(
+            "Flat YOLO split creation expects <root>/images and <root>/labels."
+        )
 
-    images = sorted([p for p in images_dir.rglob("*") if p.suffix.lower() in VALID_IMAGE_EXTS and p.is_file()])
+    images = sorted(
+        [
+            p
+            for p in images_dir.rglob("*")
+            if p.suffix.lower() in VALID_IMAGE_EXTS and p.is_file()
+        ]
+    )
     if not images:
         raise RuntimeError(f"No images found in {images_dir}")
 
@@ -223,10 +236,22 @@ def _build_plan(
         data_yaml = source_path
         root = data_yaml.parent
         ycfg = _load_yaml(data_yaml)
-        num_classes = _count_classes_from_data_yaml(ycfg) or _count_classes_from_yolo_labels(root / "labels")
+        num_classes = _count_classes_from_data_yaml(
+            ycfg
+        ) or _count_classes_from_yolo_labels(root / "labels")
         if _is_split_layout_images_train(root):
-            return DatasetPlan(data_dir=root, annotation_format="yolo", frame_dir="images", num_classes=num_classes)
-        return DatasetPlan(data_dir=root, annotation_format="auto", frame_dir="", num_classes=num_classes)
+            return DatasetPlan(
+                data_dir=root,
+                annotation_format="yolo",
+                frame_dir="images",
+                num_classes=num_classes,
+            )
+        return DatasetPlan(
+            data_dir=root,
+            annotation_format="auto",
+            frame_dir="",
+            num_classes=num_classes,
+        )
 
     # 2) JSON path
     if source_path.is_file() and source_path.suffix.lower() == ".json":
@@ -241,7 +266,9 @@ def _build_plan(
                 num_classes = max(1, len(cats))
             else:
                 ann = data.get("annotations", [])
-                cat_ids = {int(a.get("category_id", 0)) for a in ann if "category_id" in a}
+                cat_ids = {
+                    int(a.get("category_id", 0)) for a in ann if "category_id" in a
+                }
                 num_classes = max(1, len(cat_ids))
         elif mode == "custom_json":
             names = set()
@@ -256,7 +283,9 @@ def _build_plan(
                         except Exception:
                             pass
             num_classes = max(1, len(names) if names else len(ids))
-        return DatasetPlan(data_dir=root, annotation_format=mode, frame_dir="", num_classes=num_classes)
+        return DatasetPlan(
+            data_dir=root, annotation_format=mode, frame_dir="", num_classes=num_classes
+        )
 
     # 3) Directory source
     if not source_path.is_dir():
@@ -272,11 +301,21 @@ def _build_plan(
 
     if _is_split_layout_train_images(root):
         num_classes = nc or _count_classes_from_yolo_labels(root / "train" / "labels")
-        return DatasetPlan(data_dir=root, annotation_format="yolo", frame_dir="", num_classes=num_classes)
+        return DatasetPlan(
+            data_dir=root,
+            annotation_format="yolo",
+            frame_dir="",
+            num_classes=num_classes,
+        )
 
     if _is_split_layout_images_train(root):
         num_classes = nc or _count_classes_from_yolo_labels(root / "labels" / "train")
-        return DatasetPlan(data_dir=root, annotation_format="yolo", frame_dir="images", num_classes=num_classes)
+        return DatasetPlan(
+            data_dir=root,
+            annotation_format="yolo",
+            frame_dir="images",
+            num_classes=num_classes,
+        )
 
     if _is_flat_yolo_layout(root):
         if split_ratio is None:
@@ -286,8 +325,15 @@ def _build_plan(
             )
         split_root = work_dir / "prepared_datasets" / f"{root.name}_split"
         split_root = _create_split_from_flat_yolo(root, split_ratio, seed, split_root)
-        num_classes = nc or _count_classes_from_yolo_labels(split_root / "train" / "labels")
-        return DatasetPlan(data_dir=split_root, annotation_format="yolo", frame_dir="", num_classes=num_classes)
+        num_classes = nc or _count_classes_from_yolo_labels(
+            split_root / "train" / "labels"
+        )
+        return DatasetPlan(
+            data_dir=split_root,
+            annotation_format="yolo",
+            frame_dir="",
+            num_classes=num_classes,
+        )
 
     # try JSONs in directory
     json_candidates = sorted(root.rglob("*.json"))
@@ -305,14 +351,22 @@ def _build_plan(
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Train AeroMixer on any uploaded dataset source.")
-    p.add_argument("--data", required=True, help="Dataset source path: zip, folder, data.yaml, or json.")
+    p = argparse.ArgumentParser(
+        description="Train AeroMixer on any uploaded dataset source."
+    )
+    p.add_argument(
+        "--data",
+        required=True,
+        help="Dataset source path: zip, folder, data.yaml, or json.",
+    )
     p.add_argument(
         "--config-file",
         default="config_files/images/aeromixer_images_lite.yaml",
         help="Base config file.",
     )
-    p.add_argument("--output-dir", default="output/auto_any_dataset", help="Run output directory.")
+    p.add_argument(
+        "--output-dir", default="output/auto_any_dataset", help="Run output directory."
+    )
     p.add_argument("--epochs", type=int, default=3)
     p.add_argument("--batch-size", type=int, default=4)
     p.add_argument("--num-workers", type=int, default=2)
@@ -322,8 +376,12 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Only for flat YOLO datasets (images/ + labels/). Format: train,val,test e.g. 80,10,10",
     )
-    p.add_argument("--skip-val-in-train", action="store_true", help="Pass through to train_net.py")
-    p.add_argument("--dry-run", action="store_true", help="Print resolved command and exit.")
+    p.add_argument(
+        "--skip-val-in-train", action="store_true", help="Pass through to train_net.py"
+    )
+    p.add_argument(
+        "--dry-run", action="store_true", help="Print resolved command and exit."
+    )
     p.add_argument(
         "--extra-opts",
         nargs=argparse.REMAINDER,

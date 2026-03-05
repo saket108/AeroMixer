@@ -12,6 +12,7 @@ venv/
 # ---------------- Dataset (DO NOT PUSH IMAGES) ----------------
 data/aircraft/images/
 data/aircraft/labels/
+data/*_unzipped/
 
 # ---------------- Training outputs ----------------
 output/

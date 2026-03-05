@@ -9,7 +9,11 @@ echo "[1/4] Upgrading pip tooling..."
 python3 -m pip install --upgrade pip setuptools wheel
 
 echo "[2/4] Installing Colab-pinned requirements..."
-python3 -m pip install --no-cache-dir -r requirements_colab.txt
+REQ_FILE="requirements_lock_colab.txt"
+if [[ ! -f "${REQ_FILE}" ]]; then
+  REQ_FILE="requirements_colab.txt"
+fi
+python3 -m pip install --no-cache-dir -r "${REQ_FILE}"
 
 echo "[3/4] Installing OpenAI CLIP..."
 python3 -m pip install --no-cache-dir "git+https://github.com/openai/CLIP.git@dcba3cb2e2827b402d2701e7e1c7d9fed8a20ef1"
