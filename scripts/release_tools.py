@@ -13,6 +13,7 @@ import json
 import re
 import subprocess
 from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -92,6 +93,45 @@ def _check_tag_absent(root: Path, version: str) -> CheckItem:
     return CheckItem("tag_absent", True, f"tag {tag} does not exist yet")
 
 
+def _prepare_changelog_section(root: Path, version: str, date_str: str | None) -> Path:
+    changelog = root / "CHANGELOG.md"
+    if not changelog.exists():
+        raise FileNotFoundError("CHANGELOG.md not found")
+
+    text = changelog.read_text(encoding="utf-8", errors="ignore")
+    heading = f"## [{version}]"
+    if heading in text or f"## [v{version}]" in text:
+        return changelog
+
+    lines = text.splitlines(keepends=True)
+    idx_unreleased = None
+    for i, line in enumerate(lines):
+        if line.strip() == "## [Unreleased]":
+            idx_unreleased = i
+            break
+    if idx_unreleased is None:
+        raise RuntimeError("Missing '## [Unreleased]' section in CHANGELOG.md")
+
+    idx_insert = len(lines)
+    for i in range(idx_unreleased + 1, len(lines)):
+        if lines[i].startswith("## ["):
+            idx_insert = i
+            break
+
+    rel_date = date_str or datetime.now(timezone.utc).date().isoformat()
+    block = [
+        "\n",
+        f"## [{version}] - {rel_date}\n",
+        "\n",
+        "### Added\n",
+        "- TODO\n",
+        "\n",
+    ]
+    lines[idx_insert:idx_insert] = block
+    changelog.write_text("".join(lines), encoding="utf-8")
+    return changelog
+
+
 def _cmd_check(args: argparse.Namespace) -> int:
     root = _repo_root()
     items = [
@@ -113,6 +153,13 @@ def _cmd_check(args: argparse.Namespace) -> int:
         out.write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(f"Saved report: {out}")
     return 0 if ok else 2
+
+
+def _cmd_prepare(args: argparse.Namespace) -> int:
+    root = _repo_root()
+    path = _prepare_changelog_section(root, args.version, args.date)
+    print(f"Prepared changelog for version {args.version}: {path}")
+    return 0
 
 
 def _cmd_tag(args: argparse.Namespace) -> int:
@@ -146,6 +193,11 @@ def _build_parser() -> argparse.ArgumentParser:
     c.add_argument("--report-out", default=None, help="Optional JSON report output path.")
     c.set_defaults(fn=_cmd_check)
 
+    prep = sub.add_parser("prepare", help="Insert release section in CHANGELOG.md.")
+    prep.add_argument("--version", required=True, help="Version without v-prefix (e.g. 0.5.0).")
+    prep.add_argument("--date", default=None, help="Optional release date (YYYY-MM-DD).")
+    prep.set_defaults(fn=_cmd_prepare)
+
     t = sub.add_parser("tag", help="Create an annotated git tag.")
     t.add_argument("--version", required=True, help="Version without v-prefix (e.g. 0.5.0).")
     t.add_argument("--message", default=None, help="Annotated tag message.")
@@ -165,4 +217,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

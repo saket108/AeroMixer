@@ -61,6 +61,9 @@ class TestCliHelpSmoke(unittest.TestCase):
     def test_release_tools_help(self):
         self._run_help("scripts/release_tools.py")
 
+    def test_validate_docker_inference_help(self):
+        self._run_help("scripts/validate_docker_inference.py")
+
 
 if __name__ == "__main__":
     unittest.main()

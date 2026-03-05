@@ -13,10 +13,12 @@
 - `freeze_dataset_version.py`: dataset fingerprint + validation manifest for reproducibility
 - `build_tiled_yolo_dataset.py`: tile YOLO datasets for small-object runs
 - `release_tools.py`: release readiness checks and annotated tag helper
+- `run_baseline_benchmarks.py`: unified baseline runner (AeroMixer/YOLOv8/DETR) with one comparable CSV format
+- `validate_docker_inference.py`: container build/run contract validator with JSON report
 - `colab_bootstrap.sh`: Colab dependency bootstrap
 
 ## Archived research utilities
 - `archive/run_iof_tau_ablation.py`
 - `archive/run_baseline_benchmarks.py`
 
-Top-level wrappers remain for backward compatibility and forward to the archived scripts.
+Some top-level wrappers remain for backward compatibility (e.g. IOF tau ablation).

@@ -12,6 +12,21 @@ All notable changes to this project are documented in this file.
 - YOLO tiling utility for small-object workflows: `scripts/build_tiled_yolo_dataset.py`
 - Pipeline tiling flags (`--tile-size`, `--tile-overlap`, `--tile-min-cover`, `--tile-splits`)
 
+
+## [0.5.0] - 2026-03-06
+
+### Added
+- Tile-stitch full-image evaluation with global NMS and GT dedup controls.
+- Canonical config layout (`base.yaml`, `presets/*`, `archive/*`) and config policy docs.
+- Release discipline tooling (`scripts/release_tools.py`) and checklist.
+- Deployment contract docs (`docs/INFERENCE_CONTRACT.md`) and Docker packaging files.
+- CI hardening with tiny end-to-end pipeline smoke and new benchmark/tile tests.
+- Unified baseline benchmark runner (`scripts/run_baseline_benchmarks.py`) for AeroMixer/YOLOv8/DETR with canonical row format.
+
+### Changed
+- `scripts/validate_dataset.py` now supports safe YOLO auto-fix mode (`--fix`) and post-fix revalidation.
+- README benchmark and release sections now point to active baseline runner and release prepare/check/tag flow.
+
 ## [0.4.0] - 2026-03-05
 
 ### Added

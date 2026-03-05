@@ -2,6 +2,8 @@
 
 ## Versioning
 - Update `CHANGELOG.md` with release notes.
+- Or scaffold release section:
+  - `python scripts/release_tools.py prepare --version X.Y.Z`
 - Bump release version tag (`vX.Y.Z`).
 - Confirm `git status` is clean before tagging.
 - Run: `python scripts/release_tools.py check --version X.Y.Z`

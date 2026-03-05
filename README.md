@@ -328,6 +328,8 @@ Validation behavior:
 - `scripts/pipeline.py` validates dataset integrity before training by default.
 - If validation fails, pipeline stops early.
 - Override only when needed: `--allow-validation-errors` or `--skip-validation`.
+- Auto-fix label/split issues (YOLO):  
+  `python scripts/validate_dataset.py --data <dataset> --fix --report-out output/quality/report.json`
 
 Direct low-level train command (advanced/debug):
 
@@ -475,16 +477,16 @@ The script writes `ablation_summary.csv` under `outputs/iof_tau_ablation/` with:
 - `mAP@0.5`
 - `SmallObject/AP@0.5`
 
-## Baseline Benchmark Runner (Archived Research Tool)
+## Baseline Benchmark Runner (Unified)
 
-Run AeroMixer / YOLO / DETR commands and aggregate one benchmark CSV:
+Run AeroMixer / YOLO / DETR commands and append one comparable benchmark format:
 
 ```bash
-python scripts/archive/run_baseline_benchmarks.py \
-  --output-root outputs/baseline_benchmarks \
-  --tag merged_dataset_v1 \
+python scripts/run_baseline_benchmarks.py \
+  --dataset merged_dataset_v1 \
+  --preset benchmark \
   --aeromixer-cmd "python train_net.py --config-file config_files/images/aeromixer_images.yaml --skip-final-test" \
-  --aeromixer-metrics "output/aircraft_run/inference/train_metrics_final.json" \
+  --aeromixer-metrics "output/aircraft_run/inference/aircraft/result_image.log" \
   --yolo-cmd "python path/to/yolo_train.py ..." \
   --yolo-metrics "runs/detect/train/results.csv" \
   --detr-cmd "python path/to/detr_train.py ..." \
@@ -492,8 +494,8 @@ python scripts/archive/run_baseline_benchmarks.py \
 ```
 
 Output:
-- `outputs/baseline_benchmarks/benchmark_summary.csv`
-- `outputs/baseline_benchmarks/benchmark_summary.json`
+- `benchmarks/summary.csv` (canonical shared table)
+- `output/benchmarks/baseline_run.json` (run detail dump)
 
 ## License
 
@@ -505,6 +507,7 @@ See `LICENSE`.
 - Benchmark table: `benchmarks/summary.csv`
 - Release checklist: `RELEASE_CHECKLIST.md`
 - Release tooling:
+  - `python scripts/release_tools.py prepare --version 0.5.0`
   - `python scripts/release_tools.py check --version 0.5.0`
   - `python scripts/release_tools.py tag --version 0.5.0 --dry-run`
 
@@ -514,6 +517,14 @@ Build:
 
 ```bash
 docker build -t aeromixer:latest .
+```
+
+Validate docker contract (build + container command + JSON report):
+
+```bash
+python scripts/validate_docker_inference.py \
+  --image aeromixer:latest \
+  --container-cmd "python scripts/pipeline.py --help"
 ```
 
 Run inference (contract):

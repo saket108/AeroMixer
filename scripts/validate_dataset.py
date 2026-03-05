@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -359,6 +360,193 @@ def _validate_yolo_dataset(plan: ds.DatasetPlan) -> dict[str, Any]:
     }
 
 
+def _is_valid_yolo_record(
+    parts: list[str], num_classes_expected: int
+) -> tuple[bool, str]:
+    if len(parts) < 5:
+        return False, "malformed"
+    cls_id = _safe_int_from_float(parts[0])
+    x = _safe_float(parts[1])
+    y = _safe_float(parts[2])
+    w = _safe_float(parts[3])
+    h = _safe_float(parts[4])
+    if cls_id is None or x is None or y is None or w is None or h is None:
+        return False, "parse_error"
+    if cls_id < 0 or cls_id >= num_classes_expected:
+        return False, "bad_class_id"
+    vals = [x, y, w, h]
+    if any((not math.isfinite(v)) for v in vals):
+        return False, "non_finite"
+    if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0 and 0.0 < w <= 1.0 and 0.0 < h <= 1.0):
+        return False, "bbox_range"
+    return True, ""
+
+
+def _resolve_available_yolo_splits(plan: ds.DatasetPlan) -> dict[str, tuple[Path, Path | None]]:
+    data_dir = Path(plan.data_dir)
+    layout = _detect_yolo_layout(data_dir, plan.frame_dir)
+    out: dict[str, tuple[Path, Path | None]] = {}
+    for split in ["train", "val", "test"]:
+        image_dir, label_dir, _ = _resolve_split_dirs(
+            data_dir=data_dir,
+            frame_dir=plan.frame_dir,
+            layout=layout,
+            split=split,
+        )
+        if image_dir is not None:
+            out[split] = (image_dir, label_dir)
+    return out
+
+
+def _repair_yolo_dataset(
+    plan: ds.DatasetPlan,
+    *,
+    fix_label_lines: bool,
+    drop_orphan_labels: bool,
+    create_missing_labels: bool,
+    fix_leakage: bool,
+) -> dict[str, Any]:
+    splits = _resolve_available_yolo_splits(plan)
+    if not splits:
+        return {
+            "applied": False,
+            "reason": "no yolo splits found",
+            "actions": {},
+        }
+
+    num_classes = max(1, int(plan.num_classes))
+    actions: dict[str, Any] = {
+        "splits": {},
+        "totals": {
+            "label_files_rewritten": 0,
+            "invalid_lines_removed": 0,
+            "orphan_labels_removed": 0,
+            "missing_labels_created": 0,
+            "leak_images_removed": 0,
+            "leak_labels_removed": 0,
+        },
+    }
+
+    split_name_to_images: dict[str, list[Path]] = {}
+    split_name_to_labels: dict[str, dict[str, Path]] = {}
+
+    # Pass 1: label hygiene inside each split.
+    for split, (image_dir, label_dir) in splits.items():
+        images = _iter_images(image_dir)
+        split_name_to_images[split] = images
+        image_key_to_rel = {
+            _norm_key(p.relative_to(image_dir)): p.relative_to(image_dir) for p in images
+        }
+        labels = _iter_labels(label_dir) if label_dir is not None else []
+        label_key_to_path = (
+            {_norm_key(p.relative_to(label_dir)): p for p in labels} if label_dir is not None else {}
+        )
+        split_name_to_labels[split] = label_key_to_path
+
+        split_actions = {
+            "label_files_rewritten": 0,
+            "invalid_lines_removed": 0,
+            "orphan_labels_removed": 0,
+            "missing_labels_created": 0,
+        }
+
+        image_keys = set(image_key_to_rel.keys())
+        label_keys = set(label_key_to_path.keys())
+        orphan_keys = sorted(label_keys - image_keys)
+        missing_keys = sorted(image_keys - label_keys)
+
+        if drop_orphan_labels and label_dir is not None:
+            for key in orphan_keys:
+                p = label_key_to_path[key]
+                try:
+                    p.unlink()
+                    split_actions["orphan_labels_removed"] += 1
+                except Exception:
+                    pass
+
+        if create_missing_labels and label_dir is not None:
+            for key in missing_keys:
+                rel = image_key_to_rel[key]
+                out = label_dir / rel.with_suffix(".txt")
+                out.parent.mkdir(parents=True, exist_ok=True)
+                if not out.exists():
+                    out.write_text("", encoding="utf-8")
+                    split_actions["missing_labels_created"] += 1
+
+        if fix_label_lines and label_dir is not None:
+            current_labels = _iter_labels(label_dir)
+            for txt in current_labels:
+                try:
+                    lines = txt.read_text(encoding="utf-8").splitlines()
+                except Exception:
+                    continue
+                kept: list[str] = []
+                removed = 0
+                for raw in lines:
+                    line = raw.strip()
+                    if not line:
+                        continue
+                    parts = line.split()
+                    ok, _ = _is_valid_yolo_record(parts, num_classes)
+                    if ok:
+                        kept.append(" ".join(parts[:5]))
+                    else:
+                        removed += 1
+                if removed > 0:
+                    txt.write_text(("\n".join(kept) + ("\n" if kept else "")), encoding="utf-8")
+                    split_actions["label_files_rewritten"] += 1
+                    split_actions["invalid_lines_removed"] += removed
+
+        actions["splits"][split] = split_actions
+        for k in actions["totals"].keys():
+            actions["totals"][k] += split_actions.get(k, 0)
+
+    # Pass 2: split leakage by filename (priority train > val > test).
+    if fix_leakage:
+        name_index: dict[str, list[tuple[str, Path]]] = defaultdict(list)
+        for split, images in split_name_to_images.items():
+            for p in images:
+                name_index[p.name.lower()].append((split, p))
+
+        priority = {"train": 0, "val": 1, "test": 2}
+        for _, refs in name_index.items():
+            if len(refs) <= 1:
+                continue
+            refs_sorted = sorted(refs, key=lambda x: priority.get(x[0], 99))
+            keep_split, keep_img = refs_sorted[0]
+            _ = (keep_split, keep_img)
+            for split, img in refs_sorted[1:]:
+                try:
+                    img.unlink()
+                    actions["totals"]["leak_images_removed"] += 1
+                except Exception:
+                    pass
+
+                image_dir, label_dir = splits.get(split, (None, None))
+                if image_dir is None or label_dir is None:
+                    continue
+                try:
+                    rel = img.relative_to(image_dir).with_suffix(".txt")
+                    lbl = label_dir / rel
+                    if lbl.exists():
+                        lbl.unlink()
+                        actions["totals"]["leak_labels_removed"] += 1
+                except Exception:
+                    pass
+
+    return {
+        "applied": True,
+        "num_classes_expected": num_classes,
+        "options": {
+            "fix_label_lines": fix_label_lines,
+            "drop_orphan_labels": drop_orphan_labels,
+            "create_missing_labels": create_missing_labels,
+            "fix_leakage": fix_leakage,
+        },
+        "actions": actions,
+    }
+
+
 def _validate_generic_json_dataset(plan: ds.DatasetPlan) -> dict[str, Any]:
     data_dir = Path(plan.data_dir)
     json_files = sorted([p for p in data_dir.rglob("*.json") if p.is_file()])
@@ -480,6 +668,36 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Exit zero even when validation fails.",
     )
+    p.add_argument(
+        "--fix",
+        action="store_true",
+        help="Apply safe auto-fixes for YOLO datasets, then re-validate.",
+    )
+    p.add_argument(
+        "--no-fix-label-lines",
+        action="store_true",
+        help="When --fix is enabled, do not remove malformed/invalid YOLO lines.",
+    )
+    p.add_argument(
+        "--no-drop-orphan-labels",
+        action="store_true",
+        help="When --fix is enabled, keep orphan label files.",
+    )
+    p.add_argument(
+        "--no-create-missing-labels",
+        action="store_true",
+        help="When --fix is enabled, do not create empty labels for unlabeled images.",
+    )
+    p.add_argument(
+        "--no-fix-leakage",
+        action="store_true",
+        help="When --fix is enabled, do not remove duplicate filenames across splits.",
+    )
+    p.add_argument(
+        "--fix-report-out",
+        default=None,
+        help="Optional JSON path for fix action report.",
+    )
     return p.parse_args()
 
 
@@ -496,6 +714,7 @@ def main() -> int:
     plan = ds._build_plan(source_path, ratio, args.seed, work_dir)
 
     report = validate_dataset_plan(plan)
+    pre_fix_report = dict(report)
     report["dataset_source"] = str(source_path)
     report["resolved_plan"] = {
         "data_dir": str(plan.data_dir),
@@ -503,6 +722,32 @@ def main() -> int:
         "frame_dir": plan.frame_dir,
         "num_classes": plan.num_classes,
     }
+
+    fix_report = None
+    if args.fix:
+        if str(plan.annotation_format).lower() != "yolo":
+            print(
+                f"--fix requested, but annotation format is '{plan.annotation_format}'. "
+                "Auto-fix currently supports YOLO only."
+            )
+        else:
+            fix_report = _repair_yolo_dataset(
+                plan,
+                fix_label_lines=(not args.no_fix_label_lines),
+                drop_orphan_labels=(not args.no_drop_orphan_labels),
+                create_missing_labels=(not args.no_create_missing_labels),
+                fix_leakage=(not args.no_fix_leakage),
+            )
+            report = validate_dataset_plan(plan)
+            report["dataset_source"] = str(source_path)
+            report["resolved_plan"] = {
+                "data_dir": str(plan.data_dir),
+                "annotation_format": plan.annotation_format,
+                "frame_dir": plan.frame_dir,
+                "num_classes": plan.num_classes,
+            }
+            report["pre_fix"] = pre_fix_report
+            report["fix_report"] = fix_report
 
     if args.report_out:
         out = Path(args.report_out)
@@ -513,6 +758,12 @@ def main() -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
+
+    if fix_report is not None:
+        fix_out = Path(args.fix_report_out) if args.fix_report_out else out.with_name("dataset_fix_report.json")
+        with open(fix_out, "w", encoding="utf-8") as f:
+            json.dump(fix_report, f, indent=2)
+        print(f"Fix action report: {fix_out}")
 
     print(f"Validation report: {out}")
     print(
