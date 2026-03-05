@@ -25,6 +25,7 @@ import train_any_dataset as ds
 PRESET_TO_CONFIG = {
     "lite": "config_files/images/aeromixer_images_lite.yaml",
     "full": "config_files/images/aeromixer_images.yaml",
+    "prod": "config_files/images/aeromixer_images_prod.yaml",
 }
 
 
@@ -52,9 +53,38 @@ def _write_json(path: Path, payload: dict) -> None:
         json.dump(payload, f, indent=2)
 
 
-def _build_common_opts(plan: ds.DatasetPlan, output_dir: str, num_workers: int) -> list[str]:
-    class_count = max(1, int(plan.num_classes))
+def _prod_guardrail_opts() -> list[str]:
     return [
+        "DATA.INPUT_TYPE",
+        "image",
+        "DATA.NUM_FRAMES",
+        "1",
+        "DATA.SAMPLING_RATE",
+        "1",
+        "DATA.OPEN_VOCABULARY",
+        "False",
+        "MODEL.STM.PREDICT_SEVERITY",
+        "False",
+        "MODEL.STM.ATTN_TELEMETRY",
+        "False",
+        "MODEL.STM.ATTN_TELEMETRY_STAGEWISE",
+        "False",
+        "MODEL.STM.ATTN_TELEMETRY_COMPARE_NOMASK",
+        "False",
+        "TEST.METRIC",
+        "image_ap",
+    ]
+
+
+def _build_common_opts(
+    plan: ds.DatasetPlan,
+    output_dir: str,
+    num_workers: int,
+    preset: str,
+    disable_guardrails: bool,
+) -> list[str]:
+    class_count = max(1, int(plan.num_classes))
+    opts = [
         "OUTPUT_DIR",
         output_dir,
         "DATA.PATH_TO_DATA_DIR",
@@ -74,6 +104,9 @@ def _build_common_opts(plan: ds.DatasetPlan, output_dir: str, num_workers: int) 
         "MODEL.STM.NUM_CLS",
         str(class_count),
     ]
+    if preset == "prod" and not disable_guardrails:
+        opts.extend(_prod_guardrail_opts())
+    return opts
 
 
 def _build_train_cmd(
@@ -81,16 +114,18 @@ def _build_train_cmd(
     config_file: str,
     output_dir: str,
     plan: ds.DatasetPlan,
+    preset: str,
     epochs: int,
     batch_size: int,
     num_workers: int,
+    disable_guardrails: bool,
     skip_val_in_train: bool,
     extra_opts: list[str],
 ) -> list[str]:
     cmd = [python_exe, "train_net.py", "--config-file", config_file]
     if skip_val_in_train:
         cmd.append("--skip-val-in-train")
-    opts = _build_common_opts(plan, output_dir, num_workers)
+    opts = _build_common_opts(plan, output_dir, num_workers, preset, disable_guardrails)
     opts.extend(
         [
             "SOLVER.MAX_EPOCH",
@@ -117,12 +152,14 @@ def _build_eval_cmd(
     config_file: str,
     output_dir: str,
     plan: ds.DatasetPlan,
+    preset: str,
     num_workers: int,
+    disable_guardrails: bool,
     model_weight: str | None,
     extra_opts: list[str],
 ) -> list[str]:
     cmd = [python_exe, "test_net.py", "--config-file", config_file]
-    opts = _build_common_opts(plan, output_dir, num_workers)
+    opts = _build_common_opts(plan, output_dir, num_workers, preset, disable_guardrails)
     opts.extend(["MODEL.WEIGHT", _resolve_eval_weight(Path(output_dir), model_weight)])
     if extra_opts:
         opts.extend(extra_opts)
@@ -142,7 +179,7 @@ def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="AeroMixer one-command pipeline.")
     p.add_argument("--mode", choices=["train", "eval", "run"], default="run")
     p.add_argument("--data", required=True, help="Dataset path: zip/folder/data.yaml/json")
-    p.add_argument("--preset", choices=["lite", "full"], default="lite")
+    p.add_argument("--preset", choices=["lite", "full", "prod"], default="lite")
     p.add_argument("--config-file", default=None, help="Optional override for preset config.")
     p.add_argument("--output-dir", default="output/pipeline_run")
     p.add_argument("--epochs", type=int, default=3)
@@ -151,6 +188,11 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=2)
     p.add_argument("--split-ratio", default=None, help="Only for flat YOLO datasets. e.g. 80,10,10")
     p.add_argument("--skip-val-in-train", action="store_true")
+    p.add_argument(
+        "--disable-guardrails",
+        action="store_true",
+        help="Disable preset guardrails (advanced). In prod preset, guardrails are enabled by default.",
+    )
     p.add_argument("--model-weight", default=None, help="Optional weight for eval mode.")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument(
@@ -190,6 +232,7 @@ def main() -> int:
         "seed": args.seed,
         "split_ratio": args.split_ratio,
         "skip_val_in_train": bool(args.skip_val_in_train),
+        "guardrails_enabled": bool(args.preset == "prod" and not args.disable_guardrails),
         "dry_run": bool(args.dry_run),
         "extra_opts": list(args.extra_opts),
     }
@@ -199,9 +242,11 @@ def main() -> int:
         config_file=config_file,
         output_dir=output_dir,
         plan=plan,
+        preset=args.preset,
         epochs=args.epochs,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        disable_guardrails=args.disable_guardrails,
         skip_val_in_train=args.skip_val_in_train,
         extra_opts=list(args.extra_opts),
     )
@@ -210,7 +255,9 @@ def main() -> int:
         config_file=config_file,
         output_dir=output_dir,
         plan=plan,
+        preset=args.preset,
         num_workers=args.num_workers,
+        disable_guardrails=args.disable_guardrails,
         model_weight=args.model_weight,
         extra_opts=list(args.extra_opts),
     )

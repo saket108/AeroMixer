@@ -2,6 +2,8 @@
 
 ## Active entrypoints (use these)
 - `pipeline.py`: one-command professional pipeline (`prepare -> train -> eval`)
+  - Presets: `lite`, `full`, `prod`
+  - `prod` enables detector-only guardrails by default
 - `train_any_dataset.py`: dataset-aware training launcher
 - `colab_bootstrap.sh`: Colab dependency bootstrap
 

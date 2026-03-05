@@ -260,7 +260,7 @@ Then run full pipeline (prepare + train + eval) from uploaded dataset:
 python scripts/pipeline.py \
   --mode run \
   --data /content/model_dataset_zipped.zip \
-  --preset lite \
+  --preset prod \
   --output-dir output/colab_model_dataset \
   --epochs 3 \
   --batch-size 4 \
@@ -275,7 +275,7 @@ Professional local workflow (single command):
 python scripts/pipeline.py \
   --mode run \
   --data "C:/path/to/dataset_or_zip" \
-  --preset full \
+  --preset prod \
   --output-dir output/my_run \
   --epochs 30 \
   --batch-size 4 \
@@ -284,6 +284,11 @@ python scripts/pipeline.py \
 
 The pipeline writes a run manifest:
 - `<OUTPUT_DIR>/pipeline_manifest.json`
+
+Preset guide:
+- `lite`: fastest sanity/debug loop
+- `full`: research-heavy default
+- `prod`: detector-only guarded profile (open-vocab/severity/telemetry disabled by default)
 
 Direct low-level train command (advanced/debug):
 
