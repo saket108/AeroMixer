@@ -253,6 +253,25 @@ Train:
 python train_net.py --config-file config_files/images/aeromixer_images.yaml
 ```
 
+Train from any uploaded dataset (YOLO-like one command):
+
+```bash
+python scripts/train_any_dataset.py \
+  --data /content/my_dataset.zip \
+  --config-file config_files/images/aeromixer_images_lite.yaml \
+  --output-dir output/colab_any \
+  --epochs 3 \
+  --batch-size 4 \
+  --num-workers 2 \
+  --split-ratio 80,10,10 \
+  --skip-val-in-train
+```
+
+Notes:
+- `--data` supports zip, folder, `data.yaml`, or `.json`.
+- Flat YOLO folders (`images/` + `labels/`) need `--split-ratio`.
+- Script auto-detects annotation format and sets class-count overrides for STM.
+
 Eval:
 
 ```bash
