@@ -264,8 +264,13 @@ Colab quickstart (2-command setup):
 
 ```bash
 git clone https://github.com/saket108/AeroMixer.git /content/AeroMixer
-cd /content/AeroMixer && bash scripts/colab_bootstrap.sh
+cd /content/AeroMixer && AEROMIXER_COLAB_PROFILE=minimal bash scripts/colab_bootstrap.sh
 ```
+
+Notes:
+- CLIP is vendored in-repo (`clip/`), so no `pip install git+...CLIP` build step is required.
+- `AEROMIXER_COLAB_PROFILE=minimal` is the recommended stable profile.
+- Full walkthrough: `docs/COLAB_QUICKSTART.md`.
 
 Then run full pipeline (prepare + train + eval) from uploaded dataset:
 
@@ -357,7 +362,7 @@ Notes:
 - Script auto-detects annotation format and sets class-count overrides for STM.
 
 Project script policy:
-- Active: `scripts/pipeline.py`, `scripts/train_any_dataset.py`, `scripts/validate_dataset.py`, `scripts/inference_pipeline.py`, `scripts/freeze_dataset_version.py`, `scripts/colab_bootstrap.sh`
+- Active: `scripts/pipeline.py`, `scripts/train_any_dataset.py`, `scripts/validate_dataset.py`, `scripts/inference_pipeline.py`, `scripts/freeze_dataset_version.py`, `scripts/colab_bootstrap.sh`, `scripts/colab_oneclick_train.sh`
 - Archived research tools: `scripts/archive/*` (top-level wrappers kept for compatibility)
 
 Stable inference/eval pipeline:
@@ -500,6 +505,7 @@ Output:
 ## License
 
 See `LICENSE`.
+Vendored `clip/` module is from OpenAI CLIP (MIT), see `third_party_openai_clip_LICENSE.txt`.
 
 ## Release & Benchmark Tracking
 

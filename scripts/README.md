@@ -16,6 +16,7 @@
 - `run_baseline_benchmarks.py`: unified baseline runner (AeroMixer/YOLOv8/DETR) with one comparable CSV format
 - `validate_docker_inference.py`: container build/run contract validator with JSON report
 - `colab_bootstrap.sh`: Colab dependency bootstrap
+- `colab_oneclick_train.sh`: one-command Colab bootstrap + pipeline run
 
 ## Archived research utilities
 - `archive/run_iof_tau_ablation.py`

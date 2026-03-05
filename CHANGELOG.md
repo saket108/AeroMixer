@@ -11,6 +11,14 @@ All notable changes to this project are documented in this file.
 - Benchmark tracking scaffold: `benchmarks/summary.csv`, `benchmarks/README.md`
 - YOLO tiling utility for small-object workflows: `scripts/build_tiled_yolo_dataset.py`
 - Pipeline tiling flags (`--tile-size`, `--tile-overlap`, `--tile-min-cover`, `--tile-splits`)
+- Vendored OpenAI CLIP runtime module under `clip/` for install-independent imports.
+- Minimal Colab dependency profile: `requirements_lock_colab_minimal.txt`.
+- One-click Colab helper: `scripts/colab_oneclick_train.sh`.
+- Colab quickstart guide: `docs/COLAB_QUICKSTART.md`.
+
+### Changed
+- `scripts/colab_bootstrap.sh` now defaults to `AEROMIXER_COLAB_PROFILE=minimal` and verifies vendored CLIP module (no git-wheel build path).
+- `requirements*.txt` remove git-based CLIP dependency and use `ftfy` runtime dependency.
 
 
 ## [0.5.0] - 2026-03-06
