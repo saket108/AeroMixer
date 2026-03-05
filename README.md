@@ -284,11 +284,17 @@ python scripts/pipeline.py \
 
 The pipeline writes a run manifest:
 - `<OUTPUT_DIR>/pipeline_manifest.json`
+- `<OUTPUT_DIR>/dataset_validation.json` (automatic dataset quality report)
 
 Preset guide:
 - `lite`: fastest sanity/debug loop
 - `full`: research-heavy default
 - `prod`: detector-only guarded profile (open-vocab/severity/telemetry disabled by default)
+
+Validation behavior:
+- `scripts/pipeline.py` validates dataset integrity before training by default.
+- If validation fails, pipeline stops early.
+- Override only when needed: `--allow-validation-errors` or `--skip-validation`.
 
 Direct low-level train command (advanced/debug):
 

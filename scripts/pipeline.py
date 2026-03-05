@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Sequence
 
 import train_any_dataset as ds
+import validate_dataset as vd
 
 
 PRESET_TO_CONFIG = {
@@ -187,6 +188,12 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--num-workers", type=int, default=2)
     p.add_argument("--seed", type=int, default=2)
     p.add_argument("--split-ratio", default=None, help="Only for flat YOLO datasets. e.g. 80,10,10")
+    p.add_argument("--skip-validation", action="store_true", help="Skip dataset quality validation.")
+    p.add_argument(
+        "--allow-validation-errors",
+        action="store_true",
+        help="Continue even if validation fails (not recommended).",
+    )
     p.add_argument("--skip-val-in-train", action="store_true")
     p.add_argument(
         "--disable-guardrails",
@@ -216,6 +223,7 @@ def main() -> int:
     plan = ds._build_plan(source_path, ratio, args.seed, work)
 
     manifest_path = Path(output_dir) / "pipeline_manifest.json"
+    validation_report_path = Path(output_dir) / "dataset_validation.json"
     plan_dict = asdict(plan)
     plan_dict["data_dir"] = str(plan_dict["data_dir"])
 
@@ -231,6 +239,8 @@ def main() -> int:
         "num_workers": args.num_workers,
         "seed": args.seed,
         "split_ratio": args.split_ratio,
+        "skip_validation": bool(args.skip_validation),
+        "allow_validation_errors": bool(args.allow_validation_errors),
         "skip_val_in_train": bool(args.skip_val_in_train),
         "guardrails_enabled": bool(args.preset == "prod" and not args.disable_guardrails),
         "dry_run": bool(args.dry_run),
@@ -267,6 +277,35 @@ def main() -> int:
         "eval": _stringify_cmd(eval_cmd),
     }
 
+    validation = None
+    if not args.skip_validation:
+        validation = vd.validate_dataset_plan(plan)
+        validation_payload = dict(validation)
+        validation_payload["dataset_source"] = str(source_path)
+        validation_payload["resolved_plan"] = plan_dict
+        _write_json(validation_report_path, validation_payload)
+
+        print("Dataset validation:")
+        print(
+            f"  ok={validation_payload['ok']} "
+            f"errors={len(validation_payload['errors'])} "
+            f"warnings={len(validation_payload['warnings'])}"
+        )
+        if validation_payload["errors"]:
+            for err in validation_payload["errors"][:5]:
+                print(f"  ERROR: {err}")
+        if validation_payload["warnings"]:
+            for warn in validation_payload["warnings"][:5]:
+                print(f"  WARN : {warn}")
+
+    manifest["validation"] = {
+        "enabled": not bool(args.skip_validation),
+        "report_path": str(validation_report_path) if not args.skip_validation else None,
+        "ok": (None if args.skip_validation else bool(validation["ok"])),
+        "error_count": (None if args.skip_validation else len(validation["errors"])),
+        "warning_count": (None if args.skip_validation else len(validation["warnings"])),
+    }
+
     _write_json(manifest_path, manifest)
     print("Pipeline manifest:", manifest_path)
     print("Resolved dataset:")
@@ -274,6 +313,11 @@ def main() -> int:
     print(f"  annotation_format : {plan.annotation_format}")
     print(f"  frame_dir         : {plan.frame_dir!r}")
     print(f"  num_classes       : {plan.num_classes}")
+
+    if validation is not None and (not validation["ok"]) and (not args.allow_validation_errors):
+        print("Dataset validation failed. Aborting pipeline.")
+        print("Use --allow-validation-errors to continue anyway.")
+        return 2
 
     if args.mode in {"train", "run"}:
         rc = _run_command(train_cmd, cwd=root, dry_run=args.dry_run)
