@@ -247,13 +247,51 @@ Install:
 pip install -r requirements.txt
 ```
 
-Train:
+Colab quickstart (2-command setup):
+
+```bash
+git clone https://github.com/saket108/AeroMixer.git /content/AeroMixer
+cd /content/AeroMixer && bash scripts/colab_bootstrap.sh
+```
+
+Then run full pipeline (prepare + train + eval) from uploaded dataset:
+
+```bash
+python scripts/pipeline.py \
+  --mode run \
+  --data /content/model_dataset_zipped.zip \
+  --preset lite \
+  --output-dir output/colab_model_dataset \
+  --epochs 3 \
+  --batch-size 4 \
+  --num-workers 2 \
+  --split-ratio 80,10,10 \
+  --skip-val-in-train
+```
+
+Professional local workflow (single command):
+
+```bash
+python scripts/pipeline.py \
+  --mode run \
+  --data "C:/path/to/dataset_or_zip" \
+  --preset full \
+  --output-dir output/my_run \
+  --epochs 30 \
+  --batch-size 4 \
+  --num-workers 2
+```
+
+The pipeline writes a run manifest:
+- `<OUTPUT_DIR>/pipeline_manifest.json`
+
+Direct low-level train command (advanced/debug):
 
 ```bash
 python train_net.py --config-file config_files/images/aeromixer_images.yaml
 ```
 
-Train from any uploaded dataset (YOLO-like one command):
+Dataset-aware train-only command (without eval):
 
 ```bash
 python scripts/train_any_dataset.py \
@@ -271,6 +309,10 @@ Notes:
 - `--data` supports zip, folder, `data.yaml`, or `.json`.
 - Flat YOLO folders (`images/` + `labels/`) need `--split-ratio`.
 - Script auto-detects annotation format and sets class-count overrides for STM.
+
+Project script policy:
+- Active: `scripts/pipeline.py`, `scripts/train_any_dataset.py`, `scripts/colab_bootstrap.sh`
+- Archived research tools: `scripts/archive/*` (top-level wrappers kept for compatibility)
 
 Eval:
 
@@ -330,12 +372,12 @@ python -m compileall alphaction preprocess demo_image.py train_net.py test_net.p
 python -m unittest discover -s tests -v
 ```
 
-## Attention Ablation Runner
+## Attention Ablation Runner (Archived Research Tool)
 
 Run baseline/zero/clamp IoF tau experiments on a fixed 5% subset:
 
 ```bash
-python scripts/run_iof_tau_ablation.py \
+python scripts/archive/run_iof_tau_ablation.py \
   --config-file config_files/images/aeromixer_images.yaml \
   --subset-ratio 0.05 \
   --epochs 20 \
@@ -353,12 +395,12 @@ The script writes `ablation_summary.csv` under `outputs/iof_tau_ablation/` with:
 - `mAP@0.5`
 - `SmallObject/AP@0.5`
 
-## Baseline Benchmark Runner
+## Baseline Benchmark Runner (Archived Research Tool)
 
 Run AeroMixer / YOLO / DETR commands and aggregate one benchmark CSV:
 
 ```bash
-python scripts/run_baseline_benchmarks.py \
+python scripts/archive/run_baseline_benchmarks.py \
   --output-root outputs/baseline_benchmarks \
   --tag merged_dataset_v1 \
   --aeromixer-cmd "python train_net.py --config-file config_files/images/aeromixer_images.yaml --skip-final-test" \
