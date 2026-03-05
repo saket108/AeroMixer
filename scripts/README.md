@@ -6,6 +6,8 @@
   - `prod` enables detector-only guardrails by default
 - `train_any_dataset.py`: dataset-aware training launcher
 - `validate_dataset.py`: fail-fast dataset validation (`bad labels`, `split leakage`, `class stats`)
+- `inference_pipeline.py`: stable inference/eval entrypoint with JSON summary output
+- `freeze_dataset_version.py`: dataset fingerprint + validation manifest for reproducibility
 - `colab_bootstrap.sh`: Colab dependency bootstrap
 
 ## Archived research utilities

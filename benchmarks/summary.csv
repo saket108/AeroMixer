@@ -1,0 +1,1 @@
+date_utc,git_commit,model,preset,dataset,split,epochs,batch_size,image_scale,map50,map5095,small_ap,latency_ms_per_image,notes

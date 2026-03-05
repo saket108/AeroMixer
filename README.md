@@ -253,6 +253,13 @@ Reproducible install (recommended):
 pip install -r requirements_lock.txt
 ```
 
+Optional local quality hook setup:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
 Colab quickstart (2-command setup):
 
 ```bash
@@ -328,8 +335,26 @@ Notes:
 - Script auto-detects annotation format and sets class-count overrides for STM.
 
 Project script policy:
-- Active: `scripts/pipeline.py`, `scripts/train_any_dataset.py`, `scripts/colab_bootstrap.sh`
+- Active: `scripts/pipeline.py`, `scripts/train_any_dataset.py`, `scripts/validate_dataset.py`, `scripts/inference_pipeline.py`, `scripts/freeze_dataset_version.py`, `scripts/colab_bootstrap.sh`
 - Archived research tools: `scripts/archive/*` (top-level wrappers kept for compatibility)
+
+Stable inference/eval pipeline:
+
+```bash
+python scripts/inference_pipeline.py \
+  --data "C:/path/to/dataset_or_zip" \
+  --preset prod \
+  --output-dir output/inference_prod \
+  --model-weight checkpoints/model_final.pth
+```
+
+Dataset version freeze (for reproducibility records):
+
+```bash
+python scripts/freeze_dataset_version.py \
+  --data "C:/path/to/dataset_or_zip" \
+  --out output/dataset_version.json
+```
 
 Eval:
 
@@ -435,3 +460,8 @@ Output:
 ## License
 
 See `LICENSE`.
+
+## Release & Benchmark Tracking
+
+- Changelog: `CHANGELOG.md`
+- Benchmark table: `benchmarks/summary.csv`

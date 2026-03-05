@@ -49,6 +49,12 @@ class TestCliHelpSmoke(unittest.TestCase):
     def test_validate_dataset_help(self):
         self._run_help("scripts/validate_dataset.py")
 
+    def test_inference_pipeline_help(self):
+        self._run_help("scripts/inference_pipeline.py")
+
+    def test_freeze_dataset_version_help(self):
+        self._run_help("scripts/freeze_dataset_version.py")
+
 
 if __name__ == "__main__":
     unittest.main()
