@@ -1,7 +1,13 @@
+import logging
+
+import numpy as np
+import torch
 import torch.utils.data
 from alphaction.utils.comm import get_world_size
 from . import datasets as D
 from .collate_batch import BatchCollator
+
+logger = logging.getLogger("alphaction.dataset.build")
 
 
 # --------------------------------------------------------
@@ -21,10 +27,82 @@ def build_dataset(cfg, split):
 # SAMPLER
 # --------------------------------------------------------
 
-def make_data_sampler(dataset, shuffle, distributed):
+def _compute_balanced_image_weights(dataset, cfg):
+    num_classes = int(getattr(dataset, "num_classes", 0))
+    samples = getattr(dataset, "samples", None)
+    if num_classes <= 0 or not isinstance(samples, list) or len(samples) == 0:
+        return None, None
+
+    class_hist = torch.zeros(num_classes, dtype=torch.float64)
+    labels_per_image = []
+    for sample in samples:
+        labels_raw = None
+        if isinstance(sample, dict):
+            labels_raw = sample.get("labels", None)
+        labels = np.asarray(labels_raw if labels_raw is not None else [], dtype=np.int64).reshape(-1)
+        labels = labels[(labels >= 0) & (labels < num_classes)]
+        labels_per_image.append(labels)
+        if labels.size > 0:
+            binc = np.bincount(labels, minlength=num_classes)[:num_classes].astype(np.float64)
+            class_hist += torch.from_numpy(binc)
+
+    if float(class_hist.sum().item()) <= 0:
+        return None, None
+
+    min_count = max(1.0, float(getattr(cfg.DATALOADER, "BALANCED_SAMPLING_MIN_COUNT", 1.0)))
+    power = float(getattr(cfg.DATALOADER, "BALANCED_SAMPLING_POWER", 0.75))
+    empty_weight = max(1e-6, float(getattr(cfg.DATALOADER, "BALANCED_SAMPLING_EMPTY_WEIGHT", 0.25)))
+
+    class_hist_safe = torch.clamp(class_hist, min=min_count)
+    inv = (class_hist_safe.mean() / class_hist_safe).pow(power)
+    inv = inv / torch.clamp(inv.mean(), min=1e-6)
+
+    image_weights = torch.empty(len(labels_per_image), dtype=torch.double)
+    for idx, labels in enumerate(labels_per_image):
+        if labels.size == 0:
+            weight = empty_weight
+        else:
+            weight = float(inv[torch.from_numpy(labels)].mean().item())
+        image_weights[idx] = max(weight, 1e-6)
+
+    image_weights = image_weights / torch.clamp(image_weights.mean(), min=1e-6)
+    return image_weights, class_hist
+
+
+def make_data_sampler(dataset, shuffle, distributed, cfg=None, is_train=False):
     if distributed:
+        if (
+            is_train
+            and cfg is not None
+            and bool(getattr(cfg.DATALOADER, "BALANCED_SAMPLING", False))
+        ):
+            logger.warning(
+                "DATALOADER.BALANCED_SAMPLING is enabled but distributed mode is active; "
+                "falling back to DistributedSampler."
+            )
         from . import samplers
         return samplers.DistributedSampler(dataset, shuffle=shuffle)
+
+    if (
+        is_train
+        and shuffle
+        and cfg is not None
+        and bool(getattr(cfg.DATALOADER, "BALANCED_SAMPLING", False))
+    ):
+        image_weights, class_hist = _compute_balanced_image_weights(dataset, cfg)
+        if image_weights is not None:
+            logger.info(
+                "Using WeightedRandomSampler for balanced sampling "
+                "(num_samples=%d, num_classes=%d, class_hist=%s)",
+                len(image_weights),
+                int(len(class_hist)),
+                [int(x) for x in class_hist.tolist()],
+            )
+            return torch.utils.data.WeightedRandomSampler(
+                weights=image_weights,
+                num_samples=len(image_weights),
+                replacement=True,
+            )
 
     if shuffle:
         return torch.utils.data.RandomSampler(dataset)
@@ -86,7 +164,13 @@ def make_data_loader(cfg, is_train=True, is_distributed=False, start_iter=0):
         else:
             num_iters = None
 
-        sampler = make_data_sampler(dataset, shuffle, is_distributed)
+        sampler = make_data_sampler(
+            dataset,
+            shuffle,
+            is_distributed,
+            cfg=cfg,
+            is_train=is_train,
+        )
 
         batch_sampler = make_batch_data_sampler(
             dataset,

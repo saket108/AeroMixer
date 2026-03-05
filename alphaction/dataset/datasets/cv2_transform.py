@@ -939,8 +939,12 @@ class PreprocessWithBoxes:
         self.split = str(split).lower()
         self.is_train = self.split == "train"
 
-        self.mean = np.asarray(getattr(data_cfg, "MEAN", [0.45, 0.45, 0.45]), dtype=np.float32).reshape(1, 1, 3)
-        self.std = np.asarray(getattr(data_cfg, "STD", [0.225, 0.225, 0.225]), dtype=np.float32).reshape(1, 1, 3)
+        mean_vals = np.asarray(getattr(data_cfg, "MEAN", [0.45, 0.45, 0.45]), dtype=np.float32).reshape(3)
+        std_vals = np.asarray(getattr(data_cfg, "STD", [0.225, 0.225, 0.225]), dtype=np.float32).reshape(3)
+        self.mean = mean_vals.reshape(1, 1, 3)
+        self.std = std_vals.reshape(1, 1, 3)
+        self.mean_chw = mean_vals.reshape(3, 1, 1)
+        self.std_chw = std_vals.reshape(3, 1, 1)
 
         self.train_min_scales = list(getattr(data_cfg, "TRAIN_MIN_SCALES", [256]))
         self.train_max_scale = int(getattr(data_cfg, "TRAIN_MAX_SCALE", 1333))
@@ -951,6 +955,36 @@ class PreprocessWithBoxes:
         self.use_bgr = bool(getattr(image_cfg, "BGR", False))
         self.test_force_flip = bool(getattr(image_cfg, "TEST_FORCE_FLIP", False))
         self.flip_prob = 0.5
+        self.train_use_color_augmentation = bool(
+            getattr(image_cfg, "TRAIN_USE_COLOR_AUGMENTATION", False)
+        )
+        self.train_color_brightness = float(
+            getattr(image_cfg, "TRAIN_COLOR_BRIGHTNESS", 0.25)
+        )
+        self.train_color_contrast = float(
+            getattr(image_cfg, "TRAIN_COLOR_CONTRAST", 0.25)
+        )
+        self.train_color_saturation = float(
+            getattr(image_cfg, "TRAIN_COLOR_SATURATION", 0.25)
+        )
+        self.train_pca_jitter_only = bool(
+            getattr(image_cfg, "TRAIN_PCA_JITTER_ONLY", True)
+        )
+        self.train_pca_jitter_std = float(
+            getattr(image_cfg, "TRAIN_PCA_JITTER_STD", 0.1)
+        )
+        self.train_pca_eigval = np.asarray(
+            getattr(image_cfg, "TRAIN_PCA_EIGVAL", [0.225, 0.224, 0.229]),
+            dtype=np.float32,
+        )
+        self.train_pca_eigvec = np.asarray(
+            getattr(
+                image_cfg,
+                "TRAIN_PCA_EIGVEC",
+                [[-0.5675, 0.7192, 0.4009], [-0.5808, -0.0045, -0.8140], [-0.5836, -0.6948, 0.4203]],
+            ),
+            dtype=np.float32,
+        )
 
     def _choose_target_size(self, height, width):
         if len(self.fix_size) >= 2:
@@ -1011,8 +1045,35 @@ class PreprocessWithBoxes:
             if not self.use_bgr:
                 image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             image = image.astype(np.float32) / 255.0
-            image = (image - self.mean) / self.std
-            chw_images.append(np.transpose(image, (2, 0, 1)))
+            chw = np.transpose(image, (2, 0, 1))
+
+            if self.is_train and self.train_use_color_augmentation:
+                if self.train_pca_jitter_only:
+                    if self.train_pca_jitter_std > 0:
+                        chw = lighting(
+                            chw,
+                            alphastd=self.train_pca_jitter_std,
+                            eigval=self.train_pca_eigval,
+                            eigvec=self.train_pca_eigvec,
+                        )
+                else:
+                    chw = color_jitter(
+                        chw,
+                        img_brightness=self.train_color_brightness,
+                        img_contrast=self.train_color_contrast,
+                        img_saturation=self.train_color_saturation,
+                    )
+                    if self.train_pca_jitter_std > 0:
+                        chw = lighting(
+                            chw,
+                            alphastd=self.train_pca_jitter_std,
+                            eigval=self.train_pca_eigval,
+                            eigvec=self.train_pca_eigvec,
+                        )
+
+            chw = np.clip(chw, 0.0, 1.0)
+            chw = (chw - self.mean_chw) / self.std_chw
+            chw_images.append(chw.astype(np.float32))
 
         # C, T, H, W
         stacked = np.stack(chw_images, axis=1).astype(np.float32)

@@ -239,19 +239,36 @@ def _prepare_for_image_ap(predictions, dataset, score_thresh=0.0):
         boxes = prediction[0].numpy()
         scores = torch.sigmoid(prediction[1]) if dataset.multilabel_action else F.softmax(prediction[1], dim=-1)
         scores = scores.numpy()
-
-        box_ids, class_ids = np.where(scores >= score_thresh)
-        valid_ids = class_ids < dataset.num_classes
-        box_ids = box_ids[valid_ids]
-        class_ids = class_ids[valid_ids]
-        if len(box_ids) == 0:
-            results[image_key] = {"boxes": np.zeros((0, 4)), "scores": np.array([]), "action_ids": np.array([])}
-            continue
+        # Single-label detection heads should emit one class per query. Treating
+        # softmax outputs as multi-label (np.where over all classes) creates
+        # duplicate detections and severely hurts precision.
+        if dataset.multilabel_action:
+            box_ids, class_ids = np.where(scores >= score_thresh)
+            valid_ids = class_ids < dataset.num_classes
+            box_ids = box_ids[valid_ids]
+            class_ids = class_ids[valid_ids]
+            if len(box_ids) == 0:
+                results[image_key] = {"boxes": np.zeros((0, 4)), "scores": np.array([]), "action_ids": np.array([])}
+                continue
+            det_boxes = boxes[box_ids, :]
+            det_scores = scores[box_ids, class_ids]
+            det_action_ids = class_ids + 1
+        else:
+            fg_scores = scores[:, : dataset.num_classes]
+            class_ids = fg_scores.argmax(axis=1)
+            best_scores = fg_scores[np.arange(fg_scores.shape[0]), class_ids]
+            keep = best_scores >= float(score_thresh)
+            if not np.any(keep):
+                results[image_key] = {"boxes": np.zeros((0, 4)), "scores": np.array([]), "action_ids": np.array([])}
+                continue
+            det_boxes = boxes[keep, :]
+            det_scores = best_scores[keep]
+            det_action_ids = class_ids[keep] + 1
 
         results[image_key] = {
-            "boxes": boxes[box_ids, :],
-            "scores": scores[box_ids, class_ids],
-            "action_ids": class_ids + 1,
+            "boxes": det_boxes,
+            "scores": det_scores,
+            "action_ids": det_action_ids,
         }
 
     return results, targets
@@ -317,31 +334,49 @@ def _prepare_for_multimodal_image_ap(predictions, dataset, score_thresh=0.0, tex
             scores = scores.numpy()
         else:
             scores = prediction[1]
-
-        box_ids, class_ids = np.where(scores >= score_thresh)
-        valid_ids = class_ids < dataset.num_classes
-        box_ids = box_ids[valid_ids]
-        class_ids = class_ids[valid_ids]
-        
-        if len(box_ids) == 0:
-            results[image_key] = {
-                "boxes": np.zeros((0, 4)), 
-                "scores": np.array([]), 
-                "action_ids": np.array([]),
-                "text_prompts": np.array([])
-            }
-            continue
+        if dataset.multilabel_action:
+            box_ids, class_ids = np.where(scores >= score_thresh)
+            valid_ids = class_ids < dataset.num_classes
+            box_ids = box_ids[valid_ids]
+            class_ids = class_ids[valid_ids]
+            if len(box_ids) == 0:
+                results[image_key] = {
+                    "boxes": np.zeros((0, 4)),
+                    "scores": np.array([]),
+                    "action_ids": np.array([]),
+                    "text_prompts": np.array([])
+                }
+                continue
+            det_boxes = boxes[box_ids, :]
+            det_scores = scores[box_ids, class_ids]
+            det_class_ids = class_ids
+        else:
+            fg_scores = scores[:, : dataset.num_classes]
+            class_ids = fg_scores.argmax(axis=1)
+            best_scores = fg_scores[np.arange(fg_scores.shape[0]), class_ids]
+            keep = best_scores >= float(score_thresh)
+            if not np.any(keep):
+                results[image_key] = {
+                    "boxes": np.zeros((0, 4)),
+                    "scores": np.array([]),
+                    "action_ids": np.array([]),
+                    "text_prompts": np.array([])
+                }
+                continue
+            det_boxes = boxes[keep, :]
+            det_scores = best_scores[keep]
+            det_class_ids = class_ids[keep]
 
         # Add text prompts for predictions
         if class_text_map is not None:
-            pred_text_prompts = [class_text_map.get(cid, f"class_{cid}") for cid in class_ids]
+            pred_text_prompts = [class_text_map.get(int(cid), f"class_{int(cid)}") for cid in det_class_ids]
         else:
-            pred_text_prompts = [f"class_{cid}" for cid in class_ids]
+            pred_text_prompts = [f"class_{int(cid)}" for cid in det_class_ids]
 
         results[image_key] = {
-            "boxes": boxes[box_ids, :],
-            "scores": scores[box_ids, class_ids],
-            "action_ids": class_ids + 1,
+            "boxes": det_boxes,
+            "scores": det_scores,
+            "action_ids": det_class_ids + 1,
             "text_prompts": pred_text_prompts,
         }
 

@@ -89,6 +89,10 @@ _C.DATA.TEXT.AUGMENT.NUM_VARIATIONS = 5
 _C.IMAGES = CN()
 _C.IMAGES.BGR = False
 _C.IMAGES.TRAIN_USE_COLOR_AUGMENTATION = False
+_C.IMAGES.TRAIN_COLOR_BRIGHTNESS = 0.25
+_C.IMAGES.TRAIN_COLOR_CONTRAST = 0.25
+_C.IMAGES.TRAIN_COLOR_SATURATION = 0.25
+_C.IMAGES.TRAIN_PCA_JITTER_STD = 0.1
 _C.IMAGES.TRAIN_PCA_JITTER_ONLY = True
 _C.IMAGES.TRAIN_PCA_EIGVAL = [0.225, 0.224, 0.229]
 _C.IMAGES.TRAIN_PCA_EIGVEC = [
@@ -109,6 +113,11 @@ _C.DATALOADER.NUM_WORKERS = 4
 # If > 0, this enforces that each collated batch should have a size divisible
 # by SIZE_DIVISIBILITY
 _C.DATALOADER.SIZE_DIVISIBILITY = 32
+# Long-tail mitigation for detection datasets.
+_C.DATALOADER.BALANCED_SAMPLING = False
+_C.DATALOADER.BALANCED_SAMPLING_POWER = 0.75
+_C.DATALOADER.BALANCED_SAMPLING_MIN_COUNT = 1.0
+_C.DATALOADER.BALANCED_SAMPLING_EMPTY_WEIGHT = 0.25
 # If True, each batch should contain only images for which the aspect ratio
 # is compatible. This groups portrait images together, and landscape images
 # are not batched with portrait images.
@@ -343,6 +352,12 @@ _C.MODEL.STM.CHN_WEIGHT = 1.0
 _C.MODEL.STM.PRETRAIN_ACTION = False
 _C.MODEL.STM.DeST = False
 _C.MODEL.STM.FS_GAMMA = 0.0
+# Optional class-weighted CE for long-tail robustness.
+_C.MODEL.STM.CLASS_WEIGHTING = "none"  # none | inverse_freq | sqrt_inverse_freq
+_C.MODEL.STM.CLASS_WEIGHT_POWER = 1.0
+_C.MODEL.STM.CLASS_WEIGHT_MIN = 0.25
+_C.MODEL.STM.CLASS_WEIGHT_MAX = 4.0
+_C.MODEL.STM.CLASS_WEIGHT_EMA = 0.9
 
 _C.MODEL.TEXT_ENCODER = ""  # CLIP or CLIPViP
 _C.MODEL.USE_PRIOR_MAP = False

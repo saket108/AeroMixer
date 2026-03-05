@@ -78,10 +78,57 @@ class SetCriterion(nn.Module):
         self.num_classes = num_classes
         self.matcher = matcher
         self.losses = losses if losses is not None else ["labels", "boxes"]
+        self.background_eos_coef = float(eos_coef)
 
         empty_weight = torch.ones(self.num_classes + 1)
         empty_weight[-1] = eos_coef
         self.register_buffer("empty_weight", empty_weight)
+        self.register_buffer("running_class_hist", torch.ones(self.num_classes, dtype=torch.float32))
+        self.register_buffer("last_class_weights", empty_weight.clone().float())
+
+        if cfg is not None:
+            self.class_weighting = str(getattr(cfg.MODEL.STM, "CLASS_WEIGHTING", "none")).lower()
+            self.class_weight_power = float(getattr(cfg.MODEL.STM, "CLASS_WEIGHT_POWER", 1.0))
+            self.class_weight_min = float(getattr(cfg.MODEL.STM, "CLASS_WEIGHT_MIN", 0.25))
+            self.class_weight_max = float(getattr(cfg.MODEL.STM, "CLASS_WEIGHT_MAX", 4.0))
+            self.class_weight_ema = float(getattr(cfg.MODEL.STM, "CLASS_WEIGHT_EMA", 0.9))
+        else:
+            self.class_weighting = "none"
+            self.class_weight_power = 1.0
+            self.class_weight_min = 0.25
+            self.class_weight_max = 4.0
+            self.class_weight_ema = 0.9
+
+    def _classification_weights(self, target_classes_o, device):
+        if self.class_weighting in ("none", "", "off", "disabled"):
+            weights = self.empty_weight
+            self.last_class_weights.copy_(weights.detach().to(self.last_class_weights.device))
+            return weights.to(device)
+
+        if target_classes_o.numel() > 0:
+            batch_hist = torch.bincount(
+                target_classes_o.to(torch.int64),
+                minlength=self.num_classes,
+            ).to(self.running_class_hist.device, dtype=torch.float32)
+            ema = min(max(self.class_weight_ema, 0.0), 0.9999)
+            self.running_class_hist.mul_(ema).add_(batch_hist, alpha=(1.0 - ema))
+
+        hist = torch.clamp(self.running_class_hist, min=1.0)
+        ratio = hist.mean() / hist
+
+        mode = self.class_weighting
+        if mode in ("sqrt_inverse_freq", "sqrt_inverse", "sqrt_inv"):
+            exponent = 0.5 * self.class_weight_power
+        else:
+            exponent = self.class_weight_power
+        fg_weights = ratio.pow(exponent).clamp(min=self.class_weight_min, max=self.class_weight_max)
+        fg_weights = fg_weights / torch.clamp(fg_weights.mean(), min=1e-6)
+
+        weights = self.empty_weight.clone().to(fg_weights.device)
+        weights[: self.num_classes] = fg_weights
+        weights[-1] = self.background_eos_coef
+        self.last_class_weights.copy_(weights.detach().to(self.last_class_weights.device))
+        return weights.to(device)
 
     # ---------------- CLASSIFICATION ----------------
 
@@ -90,7 +137,11 @@ class SetCriterion(nn.Module):
         src_logits = outputs["pred_logits"]
 
         idx = self._get_src_permutation_idx(indices)
-        target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
+        matched = [t["labels"][J] for t, (_, J) in zip(targets, indices) if J.numel() > 0]
+        if len(matched) > 0:
+            target_classes_o = torch.cat(matched, dim=0)
+        else:
+            target_classes_o = torch.empty((0,), dtype=torch.int64, device=src_logits.device)
 
         target_classes = torch.full(
             src_logits.shape[:2],
@@ -99,9 +150,11 @@ class SetCriterion(nn.Module):
             device=src_logits.device,
         )
 
-        target_classes[idx] = target_classes_o
+        if target_classes_o.numel() > 0:
+            target_classes[idx] = target_classes_o
 
-        loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_weight)
+        ce_weights = self._classification_weights(target_classes_o, src_logits.device)
+        loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, ce_weights)
         return {"loss_ce": loss_ce}
 
     # ---------------- BOX LOSS ----------------
