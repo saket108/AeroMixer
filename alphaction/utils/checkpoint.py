@@ -8,7 +8,6 @@ from collections import OrderedDict
 from alphaction.utils.model_serialization import load_state_dict
 from alphaction.utils.c2_model_loading import load_c2_format
 from alphaction.structures.memory_pool import MemoryPool
-import numpy as np
 
 
 class Checkpointer(object):
@@ -58,23 +57,42 @@ class Checkpointer(object):
         self.tag_last_checkpoint(save_file)
 
 
-    def save_the_latest(self, data, ckpt_file, topK=3, ignores=[]):
+    def _extract_checkpoint_iter(self, filename):
+        stem = os.path.splitext(os.path.basename(filename))[0]
+        suffix = stem.split('_')[-1]
+        if suffix.isdigit():
+            return int(suffix)
+        return None
+
+    def save_the_latest(self, data, ckpt_file, topK=3, ignores=None):
         """ Only keeping the latest topK checkpoints.
         """
+        if ignores is None:
+            ignores = []
+
         # find the existing checkpoints in a sorted list
         all_ckpts = list(filter(lambda x: x.endswith('.pth'), os.listdir(self.save_dir)))
-        num_exist = len(all_ckpts)
-        if num_exist >= topK + len(ignores):
-            # remove the old checkpoints
-            all_iters = [int(filename.split('.')[-2].split('_')[-1]) for filename in all_ckpts]
-            fids = np.argsort(all_iters)  # model_5.pth
-            # iteratively remove
-            for i in fids[:(num_exist - topK + 1)]:
-                if all_iters[i] in ignores:
+        # Keep only numeric iteration checkpoints for top-k pruning.
+        numeric_ckpts = []
+        for filename in all_ckpts:
+            iter_id = self._extract_checkpoint_iter(filename)
+            if iter_id is not None:
+                numeric_ckpts.append((iter_id, filename))
+
+        num_numeric = len(numeric_ckpts)
+        if num_numeric >= topK + len(ignores):
+            numeric_ckpts = sorted(numeric_ckpts, key=lambda x: x[0])  # model_5.pth before model_10.pth
+            to_remove = num_numeric - topK + 1  # +1 for the incoming checkpoint
+            removed = 0
+            for iter_id, filename in numeric_ckpts:
+                if removed >= to_remove:
+                    break
+                if iter_id in ignores:
                     continue
-                file_to_remove = os.path.join(self.save_dir, all_ckpts[i])
+                file_to_remove = os.path.join(self.save_dir, filename)
                 if os.path.isfile(file_to_remove):
                     os.remove(file_to_remove)
+                    removed += 1
         torch.save(data, ckpt_file)
 
 
