@@ -361,7 +361,7 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--config-file",
-        default="config_files/images/aeromixer_images_lite.yaml",
+        default="config_files/presets/full.yaml",
         help="Base config file.",
     )
     p.add_argument(

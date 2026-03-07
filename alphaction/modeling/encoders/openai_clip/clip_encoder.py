@@ -32,18 +32,32 @@ class CLIPVisualEncoder(nn.Module):
         self.use_checkpoint = cfg.MODEL.CLIP.USE_CHECKPOINT
         self.use_cls_feat = cfg.MODEL.STM.USE_CLS_FEAT
         self.requires_backprop = False
-    
-    
-    def project_patch_features(self, patch_features):
-        """ patch_features: (B, D, T, h, w)
-        """
-        x = patch_features.permute(0, 2, 3, 4, 1).contiguous()
-        x = x @ self.proj.type(x.dtype)
-        x = x.permute(0, 4, 1, 2, 3).contiguous()
-        return x
-    
+        self.multiscale_layer_ids = self._build_multiscale_layer_ids(
+            len(self.transformer.resblocks)
+        )
 
-    def forward(self, x_list):
+    def _build_multiscale_layer_ids(self, depth):
+        if depth <= 0:
+            return []
+
+        indices = []
+        for frac in (1.0 / 3.0, 2.0 / 3.0, 1.0):
+            idx = int(round((depth - 1) * frac))
+            idx = max(0, min(depth - 1, idx))
+            if idx not in indices:
+                indices.append(idx)
+        return indices
+
+    def _reshape_patch_tokens(self, xseq, batch_size, num_frames, spatial_size, out_dtype):
+        return (
+            xseq[:, 1:, :]
+            .reshape(batch_size, num_frames, spatial_size[0], spatial_size[1], -1)
+            .permute(0, 4, 1, 2, 3)
+            .contiguous()
+            .type(out_dtype)
+        )
+
+    def _forward_visual(self, x_list, collect_multiscale=False):
         dtype = x_list[0].dtype
         visual_inputs = x_list[0].type(self.dtype)
 
@@ -57,35 +71,84 @@ class CLIPVisualEncoder(nn.Module):
         x = visual_inputs.permute(0, 2, 1, 3, 4).contiguous().view(-1, C, H, W)
         x = self.conv1(x)
         ws = x.size()[-2:]
-        x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [b*16, width, 18*]
-        x = x.permute(0, 2, 1).contiguous()  # shape = [N=b*16, L=18*, D=width]
-        x = torch.cat([self.class_embedding.to(x.dtype) + 
-                       torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)  # shape = [N, L+1, D]
-        # interpolate positional embedding online
-        pos_embed = self.positional_embedding.unsqueeze(0)  # (1, 257, D)
+        x = x.reshape(x.shape[0], x.shape[1], -1)
+        x = x.permute(0, 2, 1).contiguous()
+        x = torch.cat(
+            [
+                self.class_embedding.to(x.dtype)
+                + torch.zeros(
+                    x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device
+                ),
+                x,
+            ],
+            dim=1,
+        )
+        pos_embed = self.positional_embedding.unsqueeze(0)
         if pos_embed.shape[1] != ws[0] * ws[1] + 1:
-            pos_embed = interpolate_pos_embed_online(pos_embed, self.grid_size, ws, 1)  # (1, 18*?+1, D)
+            pos_embed = interpolate_pos_embed_online(pos_embed, self.grid_size, ws, 1)
         x = x + pos_embed.to(x.dtype)
-        x = self.ln_pre(x) # (16*B, 18*?+1, D)
+        x = self.ln_pre(x)
 
-        x = x.permute(1, 0, 2).contiguous()  # NLD -> LND
-        # x = self.transformer(x)
-        for blk in self.transformer.resblocks:
+        x = x.permute(1, 0, 2).contiguous()
+        capture_ids = set(self.multiscale_layer_ids if collect_multiscale else [])
+        multiscale_feats = []
+        for blk_idx, blk in enumerate(self.transformer.resblocks):
             if self.use_checkpoint and self.training and torch.is_grad_enabled() and x.requires_grad:
                 x = checkpoint.checkpoint(blk, x, use_reentrant=False)
             else:
                 x = blk(x)
-        xseq = x.permute(1, 0, 2).contiguous()  # LND -> NLD=(B*16, 18*?+1, D)
 
-        x = xseq[:, 1:, :].reshape(B, T, ws[0], ws[1], -1).permute(0, 4, 1, 2, 3).contiguous().type(dtype)  # (B, D, T, h, w)
+            if blk_idx in capture_ids:
+                xseq_stage = x.permute(1, 0, 2).contiguous()
+                multiscale_feats.append(
+                    self._reshape_patch_tokens(xseq_stage, B, T, ws, dtype)
+                )
 
+        xseq = x.permute(1, 0, 2).contiguous()
+        patch_tokens = self._reshape_patch_tokens(xseq, B, T, ws, dtype)
+
+        if collect_multiscale:
+            if not multiscale_feats:
+                multiscale_feats = [patch_tokens]
+            while len(multiscale_feats) < 3:
+                multiscale_feats.insert(0, multiscale_feats[0])
+            multiscale_feats = multiscale_feats[-3:]
+
+        cls_feat = None
         if self.use_cls_feat:
-            y = self.ln_post(xseq[:, 0, :].reshape(B, T, -1))  # semantic features, (B, T, D)
+            cls_feat = self.ln_post(xseq[:, 0, :].reshape(B, T, -1))
             if self.proj is not None:
-                y = (y @ self.proj).mean(dim=1).type(dtype)  # average CLS feat across sequence length
-            return [x, x, x, x], y
-        
-        return [x, x, x, x]
+                cls_feat = cls_feat @ self.proj
+            cls_feat = cls_feat.mean(dim=1).type(dtype)
+
+        return patch_tokens, cls_feat, multiscale_feats
+    
+    
+    def project_patch_features(self, patch_features):
+        """ patch_features: (B, D, T, h, w)
+        """
+        x = patch_features.permute(0, 2, 3, 4, 1).contiguous()
+        x = x @ self.proj.type(x.dtype)
+        x = x.permute(0, 4, 1, 2, 3).contiguous()
+        return x
+    
+
+    def forward(self, x_list):
+        patch_tokens, cls_feat, _ = self._forward_visual(
+            x_list, collect_multiscale=False
+        )
+        if self.use_cls_feat:
+            return [patch_tokens, patch_tokens, patch_tokens, patch_tokens], cls_feat
+
+        return [patch_tokens, patch_tokens, patch_tokens, patch_tokens]
+
+    def forward_multiscale(self, x_list):
+        patch_tokens, cls_feat, multiscale_feats = self._forward_visual(
+            x_list, collect_multiscale=True
+        )
+        if not multiscale_feats:
+            multiscale_feats = [patch_tokens, patch_tokens, patch_tokens]
+        return multiscale_feats, cls_feat
 
 
 
@@ -271,6 +334,7 @@ class CLIPModel(nn.Module):
         self.text_encoder = CLIPTextEncoder(cfg, clip_model, dtype=encoder_dtype)
 
         self.dim_embed = clip_model.visual.transformer.width
+        self.pyramid_channels = [self.dim_embed, self.dim_embed, self.dim_embed]
         self.tau_inv = clip_model.logit_scale.requires_grad_(False).exp()
     
         self.cam_method = normalize_cam_method(
@@ -306,6 +370,10 @@ class CLIPModel(nn.Module):
     def forward(self, x_list):
         with torch.no_grad() if not self.visual_encoder.requires_backprop else nullcontext():
             return self.visual_encoder(x_list)
+
+    def forward_multiscale(self, x_list):
+        with torch.no_grad() if not self.visual_encoder.requires_backprop else nullcontext():
+            return self.visual_encoder.forward_multiscale(x_list)
     
     def forward_text(self, device=None, cond=None):
         if device is None:

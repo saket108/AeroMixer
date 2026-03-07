@@ -347,7 +347,7 @@ Dataset-aware train-only command (without eval):
 ```bash
 python scripts/train_any_dataset.py \
   --data /content/my_dataset.zip \
-  --config-file config_files/presets/lite.yaml \
+  --config-file config_files/presets/full.yaml \
   --output-dir output/colab_any \
   --epochs 3 \
   --batch-size 4 \
