@@ -5,7 +5,9 @@ from pathlib import Path
 
 import numpy as np
 
-from alphaction.dataset.datasets.evaluation.images.image_eval import _stitch_tiled_predictions
+from alphaction.dataset.datasets.evaluation.images.image_eval import (
+    _stitch_tiled_predictions,
+)
 
 
 class TestTileStitchAndBenchmark(unittest.TestCase):
@@ -36,11 +38,13 @@ class TestTileStitchAndBenchmark(unittest.TestCase):
             },
         }
 
-        stitched_results, stitched_targets, tile_keys, stitched_images = _stitch_tiled_predictions(
-            results,
-            targets,
-            nms_iou=0.5,
-            gt_dedup_iou=0.8,
+        stitched_results, stitched_targets, tile_keys, stitched_images = (
+            _stitch_tiled_predictions(
+                results,
+                targets,
+                nms_iou=0.5,
+                gt_dedup_iou=0.8,
+            )
         )
 
         self.assertEqual(tile_keys, 2)
@@ -84,8 +88,12 @@ class TestTileStitchAndBenchmark(unittest.TestCase):
 
             eval_metrics = pl._extract_eval_metrics(out_dir)
             self.assertIn("aircraft", eval_metrics)
-            self.assertAlmostEqual(float(eval_metrics["aircraft"]["map50"]), 0.1234, places=6)
-            self.assertAlmostEqual(float(eval_metrics["aircraft"]["map5095"]), 0.0567, places=6)
+            self.assertAlmostEqual(
+                float(eval_metrics["aircraft"]["map50"]), 0.1234, places=6
+            )
+            self.assertAlmostEqual(
+                float(eval_metrics["aircraft"]["map5095"]), 0.0567, places=6
+            )
 
             rows = pl._append_benchmark_rows(tmp, manifest, eval_metrics)
             self.assertEqual(len(rows), 1)

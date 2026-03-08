@@ -382,7 +382,9 @@ def _is_valid_yolo_record(
     return True, ""
 
 
-def _resolve_available_yolo_splits(plan: ds.DatasetPlan) -> dict[str, tuple[Path, Path | None]]:
+def _resolve_available_yolo_splits(
+    plan: ds.DatasetPlan,
+) -> dict[str, tuple[Path, Path | None]]:
     data_dir = Path(plan.data_dir)
     layout = _detect_yolo_layout(data_dir, plan.frame_dir)
     out: dict[str, tuple[Path, Path | None]] = {}
@@ -435,11 +437,14 @@ def _repair_yolo_dataset(
         images = _iter_images(image_dir)
         split_name_to_images[split] = images
         image_key_to_rel = {
-            _norm_key(p.relative_to(image_dir)): p.relative_to(image_dir) for p in images
+            _norm_key(p.relative_to(image_dir)): p.relative_to(image_dir)
+            for p in images
         }
         labels = _iter_labels(label_dir) if label_dir is not None else []
         label_key_to_path = (
-            {_norm_key(p.relative_to(label_dir)): p for p in labels} if label_dir is not None else {}
+            {_norm_key(p.relative_to(label_dir)): p for p in labels}
+            if label_dir is not None
+            else {}
         )
         split_name_to_labels[split] = label_key_to_path
 
@@ -493,7 +498,9 @@ def _repair_yolo_dataset(
                     else:
                         removed += 1
                 if removed > 0:
-                    txt.write_text(("\n".join(kept) + ("\n" if kept else "")), encoding="utf-8")
+                    txt.write_text(
+                        ("\n".join(kept) + ("\n" if kept else "")), encoding="utf-8"
+                    )
                     split_actions["label_files_rewritten"] += 1
                     split_actions["invalid_lines_removed"] += removed
 
@@ -760,7 +767,11 @@ def main() -> int:
         json.dump(report, f, indent=2)
 
     if fix_report is not None:
-        fix_out = Path(args.fix_report_out) if args.fix_report_out else out.with_name("dataset_fix_report.json")
+        fix_out = (
+            Path(args.fix_report_out)
+            if args.fix_report_out
+            else out.with_name("dataset_fix_report.json")
+        )
         with open(fix_out, "w", encoding="utf-8") as f:
             json.dump(fix_report, f, indent=2)
         print(f"Fix action report: {fix_out}")

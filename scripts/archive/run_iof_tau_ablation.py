@@ -34,7 +34,11 @@ except ImportError:
 
 def _read_lines(path: str) -> List[str]:
     with open(path, "r", encoding="utf-8") as f:
-        return [line.rstrip("\n") for line in f if line.strip() and not line.strip().startswith("#")]
+        return [
+            line.rstrip("\n")
+            for line in f
+            if line.strip() and not line.strip().startswith("#")
+        ]
 
 
 def _group_by_image(lines: List[str]) -> Dict[str, List[str]]:
@@ -48,7 +52,9 @@ def _group_by_image(lines: List[str]) -> Dict[str, List[str]]:
     return grouped
 
 
-def _sample_grouped_lines(grouped: Dict[str, List[str]], ratio: float, seed: int) -> Tuple[List[str], int]:
+def _sample_grouped_lines(
+    grouped: Dict[str, List[str]], ratio: float, seed: int
+) -> Tuple[List[str], int]:
     image_keys = sorted(grouped.keys())
     if not image_keys:
         return [], 0
@@ -83,7 +89,9 @@ def _prepare_subset(
             raise FileNotFoundError(f"Missing split file: {src}")
         lines = _read_lines(src)
         grouped = _group_by_image(lines)
-        sampled_lines, sampled_images = _sample_grouped_lines(grouped, subset_ratio, seed + (0 if split == "train" else 1))
+        sampled_lines, sampled_images = _sample_grouped_lines(
+            grouped, subset_ratio, seed + (0 if split == "train" else 1)
+        )
         dst = os.path.join(subset_dir, f"{split}.txt")
         with open(dst, "w", encoding="utf-8") as f:
             for line in sampled_lines:
@@ -102,7 +110,9 @@ def _split_aliases(split: str) -> List[str]:
     return [split_name]
 
 
-def _find_existing_split_dir(base_dir: str, aliases: List[str]) -> Tuple[Optional[str], Optional[str]]:
+def _find_existing_split_dir(
+    base_dir: str, aliases: List[str]
+) -> Tuple[Optional[str], Optional[str]]:
     for alias in aliases:
         path = os.path.join(base_dir, alias)
         if os.path.isdir(path):
@@ -114,7 +124,9 @@ def _normalize_relpath(path: str) -> str:
     return path.replace("\\", "/")
 
 
-def _resolve_yolo_label_path(source_data_dir: str, image_split_dir: str, used_split_alias: str, image_path: str) -> str:
+def _resolve_yolo_label_path(
+    source_data_dir: str, image_split_dir: str, used_split_alias: str, image_path: str
+) -> str:
     rel_path_in_split = os.path.relpath(image_path, image_split_dir)
     stem_rel = os.path.splitext(_normalize_relpath(rel_path_in_split))[0]
     parts = [p for p in stem_rel.split("/") if p]
@@ -182,7 +194,9 @@ def _load_yolo_grouped_lines(source_data_dir: str, split: str) -> Dict[str, List
             if os.path.splitext(file_name)[1].lower() not in exts:
                 continue
             image_path = os.path.join(root, file_name)
-            label_path = _resolve_yolo_label_path(source_data_dir, image_split_dir, used_split_alias, image_path)
+            label_path = _resolve_yolo_label_path(
+                source_data_dir, image_split_dir, used_split_alias, image_path
+            )
             if not os.path.exists(label_path):
                 continue
 
@@ -202,7 +216,9 @@ def _load_yolo_grouped_lines(source_data_dir: str, split: str) -> Dict[str, List
                         continue
                     parts = line.split()
                     if len(parts) < 5:
-                        raise ValueError(f"Bad YOLO label at {label_path}:{line_number}")
+                        raise ValueError(
+                            f"Bad YOLO label at {label_path}:{line_number}"
+                        )
                     cls_id = int(float(parts[0]))
                     x_center, y_center, box_w, box_h = map(float, parts[1:5])
                     x1 = (x_center - box_w / 2.0) * width
@@ -217,14 +233,18 @@ def _load_yolo_grouped_lines(source_data_dir: str, split: str) -> Dict[str, List
                     if x2 <= x1 or y2 <= y1:
                         continue
 
-                    txt_lines.append(f"{img_rel} {x1:.4f} {y1:.4f} {x2:.4f} {y2:.4f} {cls_id}")
+                    txt_lines.append(
+                        f"{img_rel} {x1:.4f} {y1:.4f} {x2:.4f} {y2:.4f} {cls_id}"
+                    )
 
             if txt_lines:
                 grouped[img_rel] = txt_lines
     return grouped
 
 
-def _detect_source_annotation_format(source_data_dir: str, configured_format: str) -> str:
+def _detect_source_annotation_format(
+    source_data_dir: str, configured_format: str
+) -> str:
     fmt = (configured_format or "").strip().lower()
     if fmt and fmt != "auto":
         if fmt in {"txt", "yolo"}:
@@ -235,7 +255,9 @@ def _detect_source_annotation_format(source_data_dir: str, configured_format: st
 
     if os.path.exists(os.path.join(source_data_dir, "train.txt")):
         return "txt"
-    if os.path.isdir(os.path.join(source_data_dir, "labels")) and os.path.isdir(os.path.join(source_data_dir, "images")):
+    if os.path.isdir(os.path.join(source_data_dir, "labels")) and os.path.isdir(
+        os.path.join(source_data_dir, "images")
+    ):
         return "yolo"
     for alias in _split_aliases("train"):
         split_images = os.path.join(source_data_dir, alias, "images")
@@ -257,7 +279,9 @@ def _prepare_subset_from_yolo(
     os.makedirs(subset_dir, exist_ok=True)
     stats = {}
     grouped_train = _load_yolo_grouped_lines(source_data_dir, "train")
-    sampled_train_lines, sampled_train_images = _sample_grouped_lines(grouped_train, subset_ratio, seed)
+    sampled_train_lines, sampled_train_images = _sample_grouped_lines(
+        grouped_train, subset_ratio, seed
+    )
     train_dst = os.path.join(subset_dir, "train.txt")
     with open(train_dst, "w", encoding="utf-8") as f:
         for line in sampled_train_lines:
@@ -266,7 +290,9 @@ def _prepare_subset_from_yolo(
     stats["train_anns"] = len(sampled_train_lines)
 
     grouped_eval = _load_yolo_grouped_lines(source_data_dir, "test")
-    sampled_eval_lines, sampled_eval_images = _sample_grouped_lines(grouped_eval, subset_ratio, seed + 1)
+    sampled_eval_lines, sampled_eval_images = _sample_grouped_lines(
+        grouped_eval, subset_ratio, seed + 1
+    )
     test_dst = os.path.join(subset_dir, "test.txt")
     with open(test_dst, "w", encoding="utf-8") as f:
         for line in sampled_eval_lines:
@@ -292,7 +318,10 @@ def _parse_eval_log(result_log_path: str) -> Dict:
 def _extract_main_map(eval_metrics: Dict) -> float:
     for key, val in eval_metrics.items():
         k = str(key)
-        if k.startswith("PascalBoxes_Precision/mAP@") and "PerformanceByCategory" not in k:
+        if (
+            k.startswith("PascalBoxes_Precision/mAP@")
+            and "PerformanceByCategory" not in k
+        ):
             try:
                 return float(val)
             except Exception:
@@ -338,16 +367,29 @@ def _write_summary(output_root: str, rows: List[Dict]) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Run IoF tau ablation experiments.")
-    parser.add_argument("--config-file", default="config_files/presets/full.yaml", type=str)
+    parser.add_argument(
+        "--config-file", default="config_files/presets/full.yaml", type=str
+    )
     parser.add_argument("--output-root", default="outputs/iof_tau_ablation", type=str)
     parser.add_argument("--subset-ratio", default=0.05, type=float)
     parser.add_argument("--epochs", default=20, type=int)
     parser.add_argument("--seed", default=2, type=int)
     parser.add_argument("--clamp-values", default="0.5,1.0,2.0", type=str)
     parser.add_argument("--python", default=sys.executable, type=str)
-    parser.add_argument("--dataset-name", default="", type=str, help="Override DATA.DATASETS[0] if needed.")
-    parser.add_argument("--skip-runs", action="store_true", help="Do not launch training, only parse existing outputs.")
-    parser.add_argument("--dry-run", action="store_true", help="Print commands without executing.")
+    parser.add_argument(
+        "--dataset-name",
+        default="",
+        type=str,
+        help="Override DATA.DATASETS[0] if needed.",
+    )
+    parser.add_argument(
+        "--skip-runs",
+        action="store_true",
+        help="Do not launch training, only parse existing outputs.",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print commands without executing."
+    )
     args = parser.parse_args()
 
     cfg_dict = _load_yaml(args.config_file)
@@ -356,24 +398,36 @@ def main():
     frame_dir = data_cfg.get("FRAME_DIR", "")
     configured_format = data_cfg.get("ANNOTATION_FORMAT", "auto")
     datasets = data_cfg.get("DATASETS", ["aircraft"])
-    dataset_name = args.dataset_name or (datasets[0] if isinstance(datasets, list) and datasets else "aircraft")
+    dataset_name = args.dataset_name or (
+        datasets[0] if isinstance(datasets, list) and datasets else "aircraft"
+    )
 
     if not source_data_dir:
-        raise ValueError("DATA.PATH_TO_DATA_DIR must be set in config or passed via config override.")
+        raise ValueError(
+            "DATA.PATH_TO_DATA_DIR must be set in config or passed via config override."
+        )
 
-    source_frame_dir = os.path.join(source_data_dir, frame_dir) if frame_dir else source_data_dir
+    source_frame_dir = (
+        os.path.join(source_data_dir, frame_dir) if frame_dir else source_data_dir
+    )
     source_format = _detect_source_annotation_format(source_data_dir, configured_format)
     subset_frame_dir = source_frame_dir
     print(f"Detected source annotation format: {source_format}")
-    subset_dir = os.path.join(args.output_root, f"subset_{int(args.subset_ratio * 100)}p_seed{args.seed}")
+    subset_dir = os.path.join(
+        args.output_root, f"subset_{int(args.subset_ratio * 100)}p_seed{args.seed}"
+    )
 
     if not args.skip_runs:
         if os.path.exists(subset_dir):
             shutil.rmtree(subset_dir)
         if source_format == "txt":
-            subset_stats = _prepare_subset(source_data_dir, subset_dir, args.subset_ratio, args.seed)
+            subset_stats = _prepare_subset(
+                source_data_dir, subset_dir, args.subset_ratio, args.seed
+            )
         elif source_format == "yolo":
-            subset_stats = _prepare_subset_from_yolo(source_data_dir, subset_dir, args.subset_ratio, args.seed)
+            subset_stats = _prepare_subset_from_yolo(
+                source_data_dir, subset_dir, args.subset_ratio, args.seed
+            )
             if os.path.isdir(os.path.join(source_data_dir, "images")):
                 subset_frame_dir = os.path.join(source_data_dir, "images")
             else:
@@ -435,8 +489,12 @@ def main():
             if code != 0:
                 print(f"[WARN] experiment {exp_name} failed with exit code {code}")
 
-        train_summary_path = os.path.join(exp_output, "inference", "train_metrics_final.json")
-        eval_log_path = os.path.join(exp_output, "inference", dataset_name, "result_image.log")
+        train_summary_path = os.path.join(
+            exp_output, "inference", "train_metrics_final.json"
+        )
+        eval_log_path = os.path.join(
+            exp_output, "inference", dataset_name, "result_image.log"
+        )
         train_summary = {}
         if os.path.exists(train_summary_path):
             with open(train_summary_path, "r", encoding="utf-8") as f:

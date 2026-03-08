@@ -189,9 +189,7 @@ def _append_benchmark_rows(
     preset = str(manifest.get("preset", ""))
     epochs = manifest.get("epochs", "")
     batch_size = manifest.get("batch_size", "")
-    dataset_fp = (
-        manifest.get("dataset_fingerprint", {}) or {}
-    ).get("meta_sha256", "")
+    dataset_fp = (manifest.get("dataset_fingerprint", {}) or {}).get("meta_sha256", "")
     notes = (
         f"dataset_fp={dataset_fp};"
         f"output_dir={manifest.get('dataset_plan', {}).get('data_dir', '')};"
@@ -422,11 +420,12 @@ def _run_threshold_tuning(
 
     for thr in thresholds:
         sweep_dir = (
-            Path(output_dir)
-            / "threshold_sweeps"
-            / f"score_thr_{_threshold_tag(thr)}"
+            Path(output_dir) / "threshold_sweeps" / f"score_thr_{_threshold_tag(thr)}"
         )
-        eval_opts = list(base_extra_opts) + ["MODEL.STM.SCORE_THRESHOLD", str(float(thr))]
+        eval_opts = list(base_extra_opts) + [
+            "MODEL.STM.SCORE_THRESHOLD",
+            str(float(thr)),
+        ]
         cmd = _build_eval_cmd(
             python_exe=python_exe,
             config_file=config_file,
@@ -699,7 +698,9 @@ def main() -> int:
         "dry_run": bool(args.dry_run),
         "extra_opts": list(args.extra_opts),
     }
-    threshold_grid = _parse_float_grid(args.threshold_grid) if args.tune_thresholds else []
+    threshold_grid = (
+        _parse_float_grid(args.threshold_grid) if args.tune_thresholds else []
+    )
 
     train_cmd = _build_train_cmd(
         python_exe=sys.executable,

@@ -11,6 +11,7 @@ from alphaction.utils.checkpoint import ActionCheckpointer
 from torch.utils.collect_env import get_pretty_env_info
 from alphaction.utils.comm import synchronize, get_rank
 from alphaction.utils.logger import setup_logger
+
 # pytorch issue #973 (Unix-only)
 try:
     import resource
@@ -55,15 +56,12 @@ def main():
             backend = "nccl"
         else:
             backend = "gloo"
-        torch.distributed.init_process_group(
-            backend=backend, init_method="env://"
-        )
+        torch.distributed.init_process_group(backend=backend, init_method="env://")
 
     # Merge config file.
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
     cfg.freeze()
-
 
     # Print experimental infos.
     save_dir = ""
@@ -83,10 +81,12 @@ def main():
         logger.info("Collecting env info (might take some time)")
         logger.info("\n" + get_pretty_env_info())
     else:
-        logger.info("Startup logs condensed. Use --verbose-startup for full env/config dump.")
+        logger.info(
+            "Startup logs condensed. Use --verbose-startup for full env/config dump."
+        )
 
     # Build the model.
-    if cfg.MODEL.DET not in ('AeroLiteDetector', 'STMDetector'):
+    if cfg.MODEL.DET not in ("AeroLiteDetector", "STMDetector"):
         raise ValueError(
             f"Unsupported detector '{cfg.MODEL.DET}'. The active runtime supports 'AeroLiteDetector' (legacy alias: 'STMDetector')."
         )
@@ -103,25 +103,31 @@ def main():
     dataset_names = cfg.DATA.DATASETS
     if cfg.OUTPUT_DIR:
         for idx, dataset_name in enumerate(dataset_names):
-            inf_folder = "inference" if not cfg.TEST.SMALL_OPEN_WORLD else "inference_small"
+            inf_folder = (
+                "inference" if not cfg.TEST.SMALL_OPEN_WORLD else "inference_small"
+            )
             output_folder = os.path.join(cfg.OUTPUT_DIR, inf_folder, dataset_name)
             os.makedirs(output_folder, exist_ok=True)
             output_folders[idx] = output_folder
 
     # Do inference.
-    data_loaders_test, vocabularies_test, _ = make_data_loader(cfg, is_train=False, is_distributed=distributed)
-    for i, (output_folder, dataset_name, data_loader_test) in enumerate(zip(output_folders, dataset_names, data_loaders_test)):
+    data_loaders_test, vocabularies_test, _ = make_data_loader(
+        cfg, is_train=False, is_distributed=distributed
+    )
+    for i, (output_folder, dataset_name, data_loader_test) in enumerate(
+        zip(output_folders, dataset_names, data_loaders_test)
+    ):
         # set open vocabulary
         if len(vocabularies_test) > 0:
             configure_text_encoder(model, vocabularies_test[i])
-        
+
         inference(
             model,
             data_loader_test,
             dataset_name,
             output_folder=output_folder,
             metric=cfg.TEST.METRIC,
-            use_cache=True
+            use_cache=True,
         )
         synchronize()
 

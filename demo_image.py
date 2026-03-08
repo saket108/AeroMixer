@@ -15,11 +15,19 @@ def main():
     parser = argparse.ArgumentParser(description="Run inference on a single image")
     parser.add_argument("--config-file", required=True, help="config file")
     parser.add_argument("--image", required=True, help="path to input image")
-    parser.add_argument("--output", default="output/image_demo.png", help="annotated output path")
-    parser.add_argument("--ckpt", default=None, help="checkpoint file (overrides cfg.MODEL.WEIGHT)")
-    parser.add_argument("--topk", type=int, default=5, help="top-k action labels to show per person")
+    parser.add_argument(
+        "--output", default="output/image_demo.png", help="annotated output path"
+    )
+    parser.add_argument(
+        "--ckpt", default=None, help="checkpoint file (overrides cfg.MODEL.WEIGHT)"
+    )
+    parser.add_argument(
+        "--topk", type=int, default=5, help="top-k action labels to show per person"
+    )
     parser.add_argument("--device", default="cuda", help="cpu or cuda")
-    parser.add_argument("opts", help="Override config options", nargs=argparse.REMAINDER)
+    parser.add_argument(
+        "opts", help="Override config options", nargs=argparse.REMAINDER
+    )
     args = parser.parse_args()
 
     cfg.merge_from_file(args.config_file)
@@ -27,7 +35,11 @@ def main():
         cfg.merge_from_list(args.opts)
     cfg.freeze()
 
-    device = torch.device(args.device if torch.cuda.is_available() and args.device.startswith('cuda') else 'cpu')
+    device = torch.device(
+        args.device
+        if torch.cuda.is_available() and args.device.startswith("cuda")
+        else "cpu"
+    )
 
     # build model and load weights
     model = build_detection_model(cfg)
@@ -37,35 +49,46 @@ def main():
     if args.ckpt:
         ckpt_file = args.ckpt
     else:
-        ckpt_file = os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.WEIGHT) if cfg.MODEL.WEIGHT else None
+        ckpt_file = (
+            os.path.join(cfg.OUTPUT_DIR, cfg.MODEL.WEIGHT) if cfg.MODEL.WEIGHT else None
+        )
     if ckpt_file and os.path.exists(ckpt_file):
         checkpointer = ActionCheckpointer(cfg, model, save_dir=cfg.OUTPUT_DIR)
         checkpointer.load(ckpt_file)
     else:
-        print("Warning: no checkpoint found — running with randomly initialized weights")
+        print(
+            "Warning: no checkpoint found — running with randomly initialized weights"
+        )
 
     # prepare preprocessing (reuse PreprocessWithBoxes behavior)
     # create a minimal dataset-config object for PreprocessWithBoxes
     from types import SimpleNamespace
+
     dataset_cfg = SimpleNamespace(
         BGR=False,
         TRAIN_USE_COLOR_AUGMENTATION=False,
         TRAIN_PCA_JITTER_ONLY=False,
         TRAIN_PCA_EIGVAL=[0.225, 0.224, 0.229],
-        TRAIN_PCA_EIGVEC=[[0.467, 0.485, 0.456], [0.229, 0.224, 0.225], [0.197, 0.199, 0.201]],
+        TRAIN_PCA_EIGVEC=[
+            [0.467, 0.485, 0.456],
+            [0.229, 0.224, 0.225],
+            [0.197, 0.199, 0.201],
+        ],
         TEST_FORCE_FLIP=False,
     )
-    preproc = PreprocessWithBoxes('test', cfg.DATA, dataset_cfg)
+    preproc = PreprocessWithBoxes("test", cfg.DATA, dataset_cfg)
 
     # load image
     assert os.path.exists(args.image), f"Image not found: {args.image}"
-    imgs = utils.retry_load_images([args.image], backend='cv2')
+    imgs = utils.retry_load_images([args.image], backend="cv2")
 
     # preprocess (no boxes provided)
     imgs_proc, _ = preproc.process(imgs, boxes=None)  # imgs_proc: (3, T, H, W)
 
     # pack pathways and add batch dim
-    imgs_packed = utils.pack_pathway_output(cfg, imgs_proc, pathways=cfg.MODEL.BACKBONE.PATHWAYS)
+    imgs_packed = utils.pack_pathway_output(
+        cfg, imgs_proc, pathways=cfg.MODEL.BACKBONE.PATHWAYS
+    )
     if cfg.MODEL.BACKBONE.PATHWAYS == 1:
         primary_input = imgs_packed[0][None].to(device)  # (1, C, T, H, W)
         secondary_input = None
@@ -88,7 +111,11 @@ def main():
 
     # prepare readable labels
     # if open-vocab is used, try to get text vocab from backbone; otherwise fallback to numeric labels
-    if uses_text_branch(cfg) and hasattr(model.backbone, 'text_encoder') and hasattr(model.backbone.text_encoder, 'text_data'):
+    if (
+        uses_text_branch(cfg)
+        and hasattr(model.backbone, "text_encoder")
+        and hasattr(model.backbone.text_encoder, "text_data")
+    ):
         try:
             vocab = list(model.backbone.text_encoder.text_data.keys())
         except Exception:
@@ -116,7 +143,14 @@ def main():
         # annotate: pass the first (best) phrase as label, show all in console
         best_phrase = phrases[0] if len(phrases) > 0 else ""
         # annotate all boxes for this image (boxes_norm is a tensor of shape (M,4))
-        annotated = annotate(annotated, boxes_norm, normalized=True, phrases=[best_phrase], is_xyxy=True, set_text_color='white')
+        annotated = annotate(
+            annotated,
+            boxes_norm,
+            normalized=True,
+            phrases=[best_phrase],
+            is_xyxy=True,
+            set_text_color="white",
+        )
         # print detailed predictions to console
         for j, (b, pr) in enumerate(zip(boxes_norm.tolist(), phrases)):
             print(f"Det {i}-{j}: box={b}, {pr}")
@@ -127,5 +161,5 @@ def main():
     print(f"Saved annotated image to {args.output}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

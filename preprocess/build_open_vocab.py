@@ -114,11 +114,15 @@ def _extract_labels_from_json(path):
         raw_label = (
             rec.get("label")
             if rec.get("label") is not None
-            else rec.get("class")
-            if rec.get("class") is not None
-            else rec.get("class_id")
-            if rec.get("class_id") is not None
-            else rec.get("category_id")
+            else (
+                rec.get("class")
+                if rec.get("class") is not None
+                else (
+                    rec.get("class_id")
+                    if rec.get("class_id") is not None
+                    else rec.get("category_id")
+                )
+            )
         )
         if raw_label is None:
             continue
@@ -174,7 +178,9 @@ def main():
         if len(closed) == 0:
             raise RuntimeError("Closed list did not match any label from annotations.")
         if missing:
-            print(f"[warn] {len(missing)} labels from closed-list were not found in annotations.")
+            print(
+                f"[warn] {len(missing)} labels from closed-list were not found in annotations."
+            )
     else:
         if not (0.0 < args.closed_ratio <= 1.0):
             raise ValueError("--closed-ratio must be in (0, 1].")
@@ -210,7 +216,12 @@ def main():
         out_combined = Path(args.out_combined)
         out_combined.parent.mkdir(parents=True, exist_ok=True)
         with open(out_combined, "w", encoding="utf-8") as f:
-            json.dump({"closed": closed_json, "open": open_json}, f, indent=2, ensure_ascii=False)
+            json.dump(
+                {"closed": closed_json, "open": open_json},
+                f,
+                indent=2,
+                ensure_ascii=False,
+            )
 
     if args.out_unseen:
         out_unseen = Path(args.out_unseen)

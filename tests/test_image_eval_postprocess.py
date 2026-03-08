@@ -3,7 +3,9 @@ import unittest
 import numpy as np
 import torch
 
-from alphaction.dataset.datasets.evaluation.images.image_eval import _prepare_for_image_ap
+from alphaction.dataset.datasets.evaluation.images.image_eval import (
+    _prepare_for_image_ap,
+)
 
 
 class _DummyDataset:
@@ -41,8 +43,12 @@ class TestImageEvalPostprocess(unittest.TestCase):
         # logits over [class0, class1, background]
         logits = torch.tensor(
             [
-                [2.0, 1.9, 1.0],   # top-1 = class0; class1 also high but should NOT become another detection
-                [0.2, 0.1, 3.0],   # mostly background
+                [
+                    2.0,
+                    1.9,
+                    1.0,
+                ],  # top-1 = class0; class1 also high but should NOT become another detection
+                [0.2, 0.1, 3.0],  # mostly background
             ],
             dtype=torch.float32,
         )

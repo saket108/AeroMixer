@@ -36,20 +36,50 @@ MAP5095_KEYS = [
 
 
 def _parse_args():
-    parser = argparse.ArgumentParser(description="Run baseline benchmark commands and aggregate results.")
-    parser.add_argument("--output-root", default="outputs/baseline_benchmarks", type=str)
+    parser = argparse.ArgumentParser(
+        description="Run baseline benchmark commands and aggregate results."
+    )
+    parser.add_argument(
+        "--output-root", default="outputs/baseline_benchmarks", type=str
+    )
     parser.add_argument("--tag", default="", type=str, help="Optional experiment tag.")
     parser.add_argument("--seed", default=2, type=int)
-    parser.add_argument("--dry-run", action="store_true", help="Print commands without executing.")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print commands without executing."
+    )
 
-    parser.add_argument("--aeromixer-cmd", default="", type=str, help="Command string to run AeroMixer baseline.")
-    parser.add_argument("--aeromixer-metrics", default="", type=str, help="JSON/CSV metrics file path for AeroMixer.")
+    parser.add_argument(
+        "--aeromixer-cmd",
+        default="",
+        type=str,
+        help="Command string to run AeroMixer baseline.",
+    )
+    parser.add_argument(
+        "--aeromixer-metrics",
+        default="",
+        type=str,
+        help="JSON/CSV metrics file path for AeroMixer.",
+    )
 
-    parser.add_argument("--yolo-cmd", default="", type=str, help="Command string to run YOLO baseline.")
-    parser.add_argument("--yolo-metrics", default="", type=str, help="JSON/CSV metrics file path for YOLO.")
+    parser.add_argument(
+        "--yolo-cmd", default="", type=str, help="Command string to run YOLO baseline."
+    )
+    parser.add_argument(
+        "--yolo-metrics",
+        default="",
+        type=str,
+        help="JSON/CSV metrics file path for YOLO.",
+    )
 
-    parser.add_argument("--detr-cmd", default="", type=str, help="Command string to run DETR baseline.")
-    parser.add_argument("--detr-metrics", default="", type=str, help="JSON/CSV metrics file path for DETR.")
+    parser.add_argument(
+        "--detr-cmd", default="", type=str, help="Command string to run DETR baseline."
+    )
+    parser.add_argument(
+        "--detr-metrics",
+        default="",
+        type=str,
+        help="JSON/CSV metrics file path for DETR.",
+    )
     return parser.parse_args()
 
 

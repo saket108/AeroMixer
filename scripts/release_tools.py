@@ -47,7 +47,9 @@ def _check_clean_worktree(root: Path) -> CheckItem:
     if rc != 0:
         return CheckItem("clean_worktree", False, "failed to query git status")
     if out:
-        return CheckItem("clean_worktree", False, "working tree has uncommitted changes")
+        return CheckItem(
+            "clean_worktree", False, "working tree has uncommitted changes"
+        )
     return CheckItem("clean_worktree", True, "working tree is clean")
 
 
@@ -191,17 +193,27 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     c = sub.add_parser("check", help="Run release readiness checks.")
-    c.add_argument("--version", required=True, help="Version without v-prefix (e.g. 0.5.0).")
-    c.add_argument("--report-out", default=None, help="Optional JSON report output path.")
+    c.add_argument(
+        "--version", required=True, help="Version without v-prefix (e.g. 0.5.0)."
+    )
+    c.add_argument(
+        "--report-out", default=None, help="Optional JSON report output path."
+    )
     c.set_defaults(fn=_cmd_check)
 
     prep = sub.add_parser("prepare", help="Insert release section in CHANGELOG.md.")
-    prep.add_argument("--version", required=True, help="Version without v-prefix (e.g. 0.5.0).")
-    prep.add_argument("--date", default=None, help="Optional release date (YYYY-MM-DD).")
+    prep.add_argument(
+        "--version", required=True, help="Version without v-prefix (e.g. 0.5.0)."
+    )
+    prep.add_argument(
+        "--date", default=None, help="Optional release date (YYYY-MM-DD)."
+    )
     prep.set_defaults(fn=_cmd_prepare)
 
     t = sub.add_parser("tag", help="Create an annotated git tag.")
-    t.add_argument("--version", required=True, help="Version without v-prefix (e.g. 0.5.0).")
+    t.add_argument(
+        "--version", required=True, help="Version without v-prefix (e.g. 0.5.0)."
+    )
     t.add_argument("--message", default=None, help="Annotated tag message.")
     t.add_argument("--force", action="store_true", help="Tag even if checks fail.")
     t.add_argument("--dry-run", action="store_true", help="Print command only.")

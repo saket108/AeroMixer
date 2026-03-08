@@ -33,10 +33,18 @@ class TestModelForwardSmoke(unittest.TestCase):
         pyramid = model._build_backbone_fpn(multiscale_feats)
 
         self.assertEqual(len(pyramid), 4)
-        self.assertEqual(tuple(pyramid[0].shape), (2, cfg.MODEL.STM.HIDDEN_DIM, 1, 56, 56))
-        self.assertEqual(tuple(pyramid[1].shape), (2, cfg.MODEL.STM.HIDDEN_DIM, 1, 28, 28))
-        self.assertEqual(tuple(pyramid[2].shape), (2, cfg.MODEL.STM.HIDDEN_DIM, 1, 14, 14))
-        self.assertEqual(tuple(pyramid[3].shape), (2, cfg.MODEL.STM.HIDDEN_DIM, 1, 7, 7))
+        self.assertEqual(
+            tuple(pyramid[0].shape), (2, cfg.MODEL.STM.HIDDEN_DIM, 1, 56, 56)
+        )
+        self.assertEqual(
+            tuple(pyramid[1].shape), (2, cfg.MODEL.STM.HIDDEN_DIM, 1, 28, 28)
+        )
+        self.assertEqual(
+            tuple(pyramid[2].shape), (2, cfg.MODEL.STM.HIDDEN_DIM, 1, 14, 14)
+        )
+        self.assertEqual(
+            tuple(pyramid[3].shape), (2, cfg.MODEL.STM.HIDDEN_DIM, 1, 7, 7)
+        )
 
     def test_query_init_learnable_anchors(self):
         cfg = default_cfg.clone()
@@ -57,7 +65,10 @@ class TestModelForwardSmoke(unittest.TestCase):
         self.assertTrue(torch.all(heights > 0).item())
         self.assertLess(float(widths.mean()), 640.0 * 0.6)
         centers = torch.stack(
-            [(boxes[0, :, 0] + boxes[0, :, 2]) * 0.5, (boxes[0, :, 1] + boxes[0, :, 3]) * 0.5],
+            [
+                (boxes[0, :, 0] + boxes[0, :, 2]) * 0.5,
+                (boxes[0, :, 1] + boxes[0, :, 3]) * 0.5,
+            ],
             dim=-1,
         )
         self.assertGreater(int(torch.unique(centers.round(), dim=0).shape[0]), 4)

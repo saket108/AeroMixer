@@ -22,7 +22,9 @@ class TestImageDatasetSmoke(unittest.TestCase):
             ok = cv2.imwrite(str(image_path), image)
             self.assertTrue(ok)
 
-            (root / "train.txt").write_text("sample.jpg 5 6 40 50 0\n", encoding="utf-8")
+            (root / "train.txt").write_text(
+                "sample.jpg 5 6 40 50 0\n", encoding="utf-8"
+            )
 
             cfg = global_cfg.clone()
             cfg.defrost()
@@ -40,7 +42,9 @@ class TestImageDatasetSmoke(unittest.TestCase):
             dataset = ImageDataset(cfg, split="train")
             self.assertEqual(len(dataset), 1)
 
-            primary_input, secondary_input, whwh, boxes, labels, extras, index = dataset[0]
+            primary_input, secondary_input, whwh, boxes, labels, extras, index = (
+                dataset[0]
+            )
             self.assertIsNone(secondary_input)
             self.assertEqual(primary_input.ndim, 4)
             self.assertEqual(tuple(whwh.shape), (4,))
@@ -60,7 +64,9 @@ class TestImageDatasetSmoke(unittest.TestCase):
             ok = cv2.imwrite(str(image_path), image)
             self.assertTrue(ok)
 
-            (root / "train.txt").write_text("sample.jpg 5 6 40 50 0 0.75\n", encoding="utf-8")
+            (root / "train.txt").write_text(
+                "sample.jpg 5 6 40 50 0 0.75\n", encoding="utf-8"
+            )
 
             cfg = global_cfg.clone()
             cfg.defrost()
@@ -121,7 +127,9 @@ class TestImageDatasetSmoke(unittest.TestCase):
                     }
                 ]
             }
-            (root / "train.json").write_text(json.dumps(custom_data, indent=2), encoding="utf-8")
+            (root / "train.json").write_text(
+                json.dumps(custom_data, indent=2), encoding="utf-8"
+            )
 
             cfg = global_cfg.clone()
             cfg.defrost()
@@ -146,7 +154,10 @@ class TestImageDatasetSmoke(unittest.TestCase):
             self.assertAlmostEqual(float(extras["severity"][0]), 0.33, places=6)
             self.assertIn("annotation_extras", extras)
             self.assertEqual(len(extras["annotation_extras"]), 1)
-            self.assertEqual(extras["annotation_extras"][0]["description"], "Sample defect description")
+            self.assertEqual(
+                extras["annotation_extras"][0]["description"],
+                "Sample defect description",
+            )
             self.assertEqual(extras["annotation_extras"][0]["category_name"], "dent")
 
 

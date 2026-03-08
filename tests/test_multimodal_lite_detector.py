@@ -44,7 +44,9 @@ class TestMultimodalLiteDetector(unittest.TestCase):
         self.assertEqual(len(multiscale_feats), 3)
         self.assertEqual(tuple(cls_feat.shape), (2, 384))
         self.assertEqual(tuple(text_features.shape), (3, cfg.MODEL.LITE_TEXT.EMBED_DIM))
-        self.assertTrue(torch.allclose(text_features.norm(dim=-1), torch.ones(3), atol=1e-4))
+        self.assertTrue(
+            torch.allclose(text_features.norm(dim=-1), torch.ones(3), atol=1e-4)
+        )
 
     def test_amstage_text_fusion_changes_foreground_logits(self):
         stage = AMStage(
@@ -95,7 +97,9 @@ class TestMultimodalLiteDetector(unittest.TestCase):
         ]
         vis_cls_feat = torch.randn(2, 512)
 
-        context = decoder.get_image_text_context(text_features, labels=labels, vis_cls_feat=vis_cls_feat)
+        context = decoder.get_image_text_context(
+            text_features, labels=labels, vis_cls_feat=vis_cls_feat
+        )
 
         self.assertEqual(tuple(context.shape), (2, 4))
         self.assertTrue(torch.allclose(context[0], torch.tensor([0.5, 0.0, 0.5, 0.0])))

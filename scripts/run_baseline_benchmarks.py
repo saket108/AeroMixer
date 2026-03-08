@@ -208,7 +208,9 @@ def main() -> int:
     timestamp = _now_iso()
 
     specs = [
-        BaselineSpec("AeroMixer", args.aeromixer_cmd.strip(), args.aeromixer_metrics.strip()),
+        BaselineSpec(
+            "AeroMixer", args.aeromixer_cmd.strip(), args.aeromixer_metrics.strip()
+        ),
         BaselineSpec("YOLOv8", args.yolo_cmd.strip(), args.yolo_metrics.strip()),
         BaselineSpec("DETR", args.detr_cmd.strip(), args.detr_metrics.strip()),
     ]
@@ -225,7 +227,9 @@ def main() -> int:
 
         map50, map5095, small_ap, metrics_status = (None, None, None, "no metrics path")
         if spec.metrics:
-            map50, map5095, small_ap, metrics_status = _parse_metrics(Path(spec.metrics))
+            map50, map5095, small_ap, metrics_status = _parse_metrics(
+                Path(spec.metrics)
+            )
 
         row = {
             "date_utc": timestamp,

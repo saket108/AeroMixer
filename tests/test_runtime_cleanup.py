@@ -1,9 +1,16 @@
 import unittest
 
 from alphaction.config import cfg as default_cfg, uses_text_branch
-from alphaction.modeling.detector.action_detector import ActionDetector, MultimodalActionDetector
+from alphaction.modeling.detector.action_detector import (
+    ActionDetector,
+    MultimodalActionDetector,
+)
 from alphaction.modeling.detector.stm_detector import AeroLiteDetector, STMDetector
-from alphaction.modeling.runtime import configure_text_encoder, get_backbone, has_text_encoder
+from alphaction.modeling.runtime import (
+    configure_text_encoder,
+    get_backbone,
+    has_text_encoder,
+)
 
 
 class TestRuntimeCleanup(unittest.TestCase):
@@ -35,7 +42,9 @@ class TestRuntimeCleanup(unittest.TestCase):
         self.assertTrue(has_text_encoder(model))
         self.assertIsNotNone(get_backbone(model))
         self.assertTrue(configure_text_encoder(model, vocab))
-        self.assertEqual(list(model.backbone.text_encoder.text_data.keys()), ["dent", "scratch"])
+        self.assertEqual(
+            list(model.backbone.text_encoder.text_data.keys()), ["dent", "scratch"]
+        )
 
 
 if __name__ == "__main__":

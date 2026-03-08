@@ -36,7 +36,9 @@ def _repo_root() -> Path:
 
 def _run(cmd: list[str], cwd: Path) -> StepResult:
     try:
-        p = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True, check=False)
+        p = subprocess.run(
+            cmd, cwd=str(cwd), capture_output=True, text=True, check=False
+        )
         return StepResult(
             name=cmd[0] if cmd else "unknown",
             ok=(p.returncode == 0),
