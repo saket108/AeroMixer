@@ -119,6 +119,10 @@ def do_train(
                 f"loss: {meters.total_loss.avg:.4f}",
                 f"lr: {optimizer.param_groups[0]['lr']:.6f}",
             ]
+            if "loss_tile_consistency" in meters.meters:
+                log_fields.append(
+                    f"loss_tile_consistency: {meters.meters['loss_tile_consistency'].avg:.4f}"
+                )
             for key in ["attn_entropy_avg", "attn_diag_avg", "attn_tau_mean_avg", "refine_l1_avg"]:
                 if key in meters.meters:
                     log_fields.append(f"{key}: {meters.meters[key].avg:.4f}")

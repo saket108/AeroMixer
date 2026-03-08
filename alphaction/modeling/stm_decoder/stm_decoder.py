@@ -582,6 +582,58 @@ class STMDecoder(nn.Module):
         self.prompt_adaptive_min_fraction = float(
             getattr(cfg.MODEL.STM, "PROMPT_ADAPTIVE_MIN_FRACTION", 0.50)
         )
+        self.class_partition_queries = bool(
+            getattr(cfg.MODEL.STM, "CLASS_PARTITION_QUERIES", False)
+        )
+        self.class_partition_query_ratio = float(
+            getattr(cfg.MODEL.STM, "CLASS_PARTITION_QUERY_RATIO", 0.20)
+        )
+        self.class_partition_topk = int(
+            getattr(cfg.MODEL.STM, "CLASS_PARTITION_TOPK", 3)
+        )
+        self.class_partition_scale = float(
+            getattr(cfg.MODEL.STM, "CLASS_PARTITION_SCALE", 0.30)
+        )
+        self.class_partition_query_proj = (
+            nn.Linear(self.text_dim, cfg.MODEL.STM.HIDDEN_DIM, bias=False)
+            if self.use_text_guidance and self.class_partition_queries
+            else None
+        )
+        self.tile_global_context = bool(
+            getattr(cfg.MODEL.STM, "TILE_GLOBAL_CONTEXT", False)
+        )
+        self.tile_global_context_blend = float(
+            getattr(cfg.MODEL.STM, "TILE_GLOBAL_CONTEXT_BLEND", 0.20)
+        )
+        self.tile_global_context_query_scale = float(
+            getattr(cfg.MODEL.STM, "TILE_GLOBAL_CONTEXT_QUERY_SCALE", 0.20)
+        )
+        self.tile_query_proj = (
+            nn.Linear(self.text_dim, cfg.MODEL.STM.HIDDEN_DIM, bias=False)
+            if self.use_text_guidance and self.tile_global_context
+            else None
+        )
+        self.cross_tile_consistency = bool(
+            getattr(cfg.MODEL.STM, "CROSS_TILE_CONSISTENCY", False)
+        )
+        self.cross_tile_consistency_topk = int(
+            getattr(cfg.MODEL.STM, "CROSS_TILE_CONSISTENCY_TOPK", 12)
+        )
+        self.cross_tile_consistency_min_score = float(
+            getattr(cfg.MODEL.STM, "CROSS_TILE_CONSISTENCY_MIN_SCORE", 0.10)
+        )
+        self.cross_tile_consistency_iou = float(
+            getattr(cfg.MODEL.STM, "CROSS_TILE_CONSISTENCY_IOU", 0.20)
+        )
+        self.cross_tile_consistency_box_weight = float(
+            getattr(cfg.MODEL.STM, "CROSS_TILE_CONSISTENCY_BOX_WEIGHT", 0.25)
+        )
+        self.cross_tile_consistency_logit_weight = float(
+            getattr(cfg.MODEL.STM, "CROSS_TILE_CONSISTENCY_LOGIT_WEIGHT", 1.00)
+        )
+        self.cross_tile_consistency_embed_weight = float(
+            getattr(cfg.MODEL.STM, "CROSS_TILE_CONSISTENCY_EMBED_WEIGHT", 0.25)
+        )
 
         self.num_stages = cfg.MODEL.STM.NUM_STAGES
         self.decoder_stages = nn.ModuleList()
@@ -638,6 +690,10 @@ class STMDecoder(nn.Module):
         }
         if self.predict_severity:
             base_weight_dict["loss_severity"] = severity_weight
+        if self.cross_tile_consistency:
+            base_weight_dict["loss_tile_consistency"] = float(
+                getattr(cfg.MODEL.STM, "CROSS_TILE_CONSISTENCY_WEIGHT", 0.20)
+            )
         self.weight_dict = dict(base_weight_dict)
 
         use_focal = False
@@ -844,7 +900,319 @@ class STMDecoder(nn.Module):
         )
         return torch.cat([cond, pad], dim=-1)
 
-    def get_image_text_context(self, text_features, labels=None, vis_cls_feat=None):
+    def _get_prototype_image_context(self, extras, batch_size, device, dtype):
+        if not isinstance(extras, dict):
+            return None, 0.0
+        proto_summary = extras.get("prototype_memory")
+        if not isinstance(proto_summary, dict):
+            return None, 0.0
+        image_context = proto_summary.get("image_context")
+        if image_context is None:
+            return None, 0.0
+
+        image_context = torch.as_tensor(image_context, device=device, dtype=dtype)
+        if image_context.ndim == 1:
+            image_context = image_context.unsqueeze(0)
+        if image_context.size(0) == 1 and batch_size > 1:
+            image_context = image_context.expand(batch_size, -1)
+        elif image_context.size(0) > batch_size:
+            image_context = image_context[:batch_size]
+        elif image_context.size(0) < batch_size:
+            pad = image_context[-1:].expand(batch_size - image_context.size(0), -1)
+            image_context = torch.cat([image_context, pad], dim=0)
+
+        blend = float(proto_summary.get("context_blend", 0.0))
+        return image_context, max(0.0, min(1.0, blend))
+
+    def _get_tile_global_context(self, extras, batch_size, device, dtype):
+        if not isinstance(extras, dict):
+            return None, 0.0, None, None
+        tile_summary = extras.get("tile_global_context")
+        if not isinstance(tile_summary, dict):
+            return None, 0.0, None, None
+
+        context = tile_summary.get("context")
+        if context is None:
+            return None, 0.0, None, None
+
+        context = torch.as_tensor(context, device=device, dtype=dtype)
+        if context.ndim == 1:
+            context = context.unsqueeze(0)
+        if context.size(0) == 1 and batch_size > 1:
+            context = context.expand(batch_size, -1)
+        elif context.size(0) > batch_size:
+            context = context[:batch_size]
+        elif context.size(0) < batch_size:
+            pad = context[-1:].expand(batch_size - context.size(0), -1)
+            context = torch.cat([context, pad], dim=0)
+
+        def _align_vector(name):
+            value = tile_summary.get(name)
+            if value is None:
+                return None
+            value = torch.as_tensor(value, device=device, dtype=dtype)
+            if value.ndim == 0:
+                value = value.repeat(batch_size)
+            elif value.ndim > 1:
+                value = value.reshape(batch_size, -1).mean(dim=-1)
+            elif value.size(0) == 1 and batch_size > 1:
+                value = value.expand(batch_size)
+            elif value.size(0) > batch_size:
+                value = value[:batch_size]
+            elif value.size(0) < batch_size:
+                value = torch.cat(
+                    [value, value[-1:].expand(batch_size - value.size(0))], dim=0
+                )
+            return value
+
+        blend = float(tile_summary.get("blend", self.tile_global_context_blend))
+        coverage = _align_vector("coverage")
+        edge = _align_vector("edge_proximity")
+        return context, max(0.0, min(1.0, blend)), coverage, edge
+
+    def _get_tile_meta_list(self, extras, batch_size):
+        if not isinstance(extras, dict):
+            return [None] * batch_size
+
+        raw_meta = extras.get("tile_meta")
+        if raw_meta is None:
+            return [None] * batch_size
+        if isinstance(raw_meta, dict):
+            raw_meta = [raw_meta]
+        if not isinstance(raw_meta, (list, tuple)):
+            return [None] * batch_size
+
+        meta_list = []
+        for idx in range(batch_size):
+            item = raw_meta[idx] if idx < len(raw_meta) else None
+            meta_list.append(item if isinstance(item, dict) else None)
+        return meta_list
+
+    def _tile_window_box(self, tile_meta, device, dtype):
+        if not isinstance(tile_meta, dict) or not bool(tile_meta.get("is_tiled", False)):
+            return None
+
+        offset = torch.as_tensor(
+            tile_meta.get("offset_norm", [0.0, 0.0]), device=device, dtype=dtype
+        ).reshape(-1)
+        size = torch.as_tensor(
+            tile_meta.get("size_norm", [1.0, 1.0]), device=device, dtype=dtype
+        ).reshape(-1)
+        if offset.numel() < 2 or size.numel() < 2:
+            return None
+
+        x1 = offset[0].clamp(0.0, 1.0)
+        y1 = offset[1].clamp(0.0, 1.0)
+        x2 = (offset[0] + size[0]).clamp(0.0, 1.0)
+        y2 = (offset[1] + size[1]).clamp(0.0, 1.0)
+        return torch.stack([x1, y1, x2, y2], dim=0)
+
+    def _to_global_tile_boxes(self, boxes_xyxy, whwh, tile_meta):
+        boxes_norm = (boxes_xyxy / whwh.unsqueeze(0)).clamp(0.0, 1.0)
+        if not isinstance(tile_meta, dict) or not bool(tile_meta.get("is_tiled", False)):
+            return boxes_norm
+
+        offset = torch.as_tensor(
+            tile_meta.get("offset_norm", [0.0, 0.0]),
+            device=boxes_xyxy.device,
+            dtype=boxes_xyxy.dtype,
+        ).reshape(-1)
+        size = torch.as_tensor(
+            tile_meta.get("size_norm", [1.0, 1.0]),
+            device=boxes_xyxy.device,
+            dtype=boxes_xyxy.dtype,
+        ).reshape(-1)
+        if offset.numel() < 2 or size.numel() < 2:
+            return boxes_norm
+
+        boxes_global = boxes_norm.clone()
+        boxes_global[:, 0] = offset[0] + boxes_norm[:, 0] * size[0]
+        boxes_global[:, 2] = offset[0] + boxes_norm[:, 2] * size[0]
+        boxes_global[:, 1] = offset[1] + boxes_norm[:, 1] * size[1]
+        boxes_global[:, 3] = offset[1] + boxes_norm[:, 3] * size[1]
+        return boxes_global.clamp(0.0, 1.0)
+
+    def _select_consistency_candidates(self, logits, boxes, query_feats):
+        num_fg_classes = logits.size(-1) - 1
+        if num_fg_classes <= 0 or logits.size(0) == 0:
+            return None
+
+        probs = logits.softmax(dim=-1)
+        fg_probs = probs[:, :num_fg_classes]
+        scores, class_ids = fg_probs.max(dim=-1)
+
+        order = torch.argsort(scores, descending=True)
+        if self.cross_tile_consistency_min_score > 0.0:
+            keep = scores[order] >= self.cross_tile_consistency_min_score
+            order = order[keep]
+        if order.numel() == 0:
+            topk = min(int(self.cross_tile_consistency_topk), scores.numel())
+            if topk <= 0:
+                return None
+            order = torch.topk(scores, k=topk).indices
+        else:
+            order = order[: min(int(self.cross_tile_consistency_topk), order.numel())]
+
+        if order.numel() == 0:
+            return None
+
+        fg_log_probs = F.log_softmax(logits[:, :num_fg_classes], dim=-1)
+        return {
+            "boxes": boxes[order],
+            "scores": scores[order],
+            "class_ids": class_ids[order],
+            "fg_probs": fg_probs[order],
+            "fg_log_probs": fg_log_probs[order],
+            "queries": query_feats[order],
+        }
+
+    def _compute_cross_tile_consistency_loss(
+        self, pred_logits, pred_boxes, query_feats, whwh, extras
+    ):
+        zero = pred_boxes.sum() * 0.0
+        if not self.cross_tile_consistency:
+            return {"loss_tile_consistency": zero}
+
+        batch_size = int(pred_boxes.size(0))
+        tile_meta_list = self._get_tile_meta_list(extras, batch_size)
+        if not tile_meta_list or all(item is None for item in tile_meta_list):
+            return {"loss_tile_consistency": zero}
+
+        groups = {}
+        for idx, meta in enumerate(tile_meta_list):
+            if not isinstance(meta, dict) or not bool(meta.get("is_tiled", False)):
+                continue
+            base_id = str(meta.get("base_image_id", "")).strip()
+            if not base_id:
+                continue
+            groups.setdefault(base_id, []).append(idx)
+
+        if not groups:
+            return {"loss_tile_consistency": zero}
+
+        loss_terms = []
+        for indices in groups.values():
+            if len(indices) < 2:
+                continue
+            for pos, left_idx in enumerate(indices[:-1]):
+                left_meta = tile_meta_list[left_idx]
+                left_window = self._tile_window_box(
+                    left_meta, device=pred_boxes.device, dtype=pred_boxes.dtype
+                )
+                if left_window is None:
+                    continue
+                left_global = self._to_global_tile_boxes(
+                    pred_boxes[left_idx], whwh[left_idx], left_meta
+                )
+                left_candidates = self._select_consistency_candidates(
+                    pred_logits[left_idx], left_global, query_feats[left_idx]
+                )
+                if left_candidates is None:
+                    continue
+
+                for right_idx in indices[pos + 1 :]:
+                    right_meta = tile_meta_list[right_idx]
+                    right_window = self._tile_window_box(
+                        right_meta, device=pred_boxes.device, dtype=pred_boxes.dtype
+                    )
+                    if right_window is None:
+                        continue
+
+                    tile_overlap = bbox_overlaps(
+                        left_window.unsqueeze(0), right_window.unsqueeze(0)
+                    )
+                    if tile_overlap.numel() == 0 or float(tile_overlap.max().item()) <= 0.0:
+                        continue
+
+                    right_global = self._to_global_tile_boxes(
+                        pred_boxes[right_idx], whwh[right_idx], right_meta
+                    )
+                    right_candidates = self._select_consistency_candidates(
+                        pred_logits[right_idx], right_global, query_feats[right_idx]
+                    )
+                    if right_candidates is None:
+                        continue
+
+                    pair_iou = bbox_overlaps(
+                        left_candidates["boxes"], right_candidates["boxes"]
+                    )
+                    class_match = left_candidates["class_ids"][:, None].eq(
+                        right_candidates["class_ids"][None, :]
+                    )
+                    valid = class_match & (
+                        pair_iou >= float(self.cross_tile_consistency_iou)
+                    )
+                    if not bool(valid.any()):
+                        continue
+
+                    pair_scores = 0.5 * (
+                        left_candidates["scores"][:, None]
+                        + right_candidates["scores"][None, :]
+                    )
+                    match_score = torch.where(
+                        valid,
+                        pair_iou * pair_scores,
+                        torch.zeros_like(pair_iou),
+                    )
+                    left_best_score, left_best_idx = match_score.max(dim=1)
+                    right_best_score, right_best_idx = match_score.max(dim=0)
+                    if not bool((left_best_score > 0).any()):
+                        continue
+
+                    left_keep = torch.where(left_best_score > 0)[0]
+                    right_partner = left_best_idx[left_keep]
+                    mutual = right_best_idx[right_partner] == left_keep
+                    if not bool(mutual.any()):
+                        continue
+
+                    left_keep = left_keep[mutual]
+                    right_partner = right_partner[mutual]
+                    pair_weight = (
+                        0.5
+                        * (
+                            left_candidates["scores"][left_keep]
+                            + right_candidates["scores"][right_partner]
+                        )
+                    ).detach()
+
+                    aligned_iou = bbox_overlaps(
+                        left_candidates["boxes"][left_keep],
+                        right_candidates["boxes"][right_partner],
+                        is_aligned=True,
+                    ).clamp(0.0, 1.0)
+                    box_loss = 1.0 - aligned_iou
+
+                    left_log = left_candidates["fg_log_probs"][left_keep]
+                    right_log = right_candidates["fg_log_probs"][right_partner]
+                    left_prob = left_candidates["fg_probs"][left_keep].detach()
+                    right_prob = right_candidates["fg_probs"][right_partner].detach()
+                    logit_loss = 0.5 * (
+                        F.kl_div(left_log, right_prob, reduction="none").sum(dim=-1)
+                        + F.kl_div(right_log, left_prob, reduction="none").sum(dim=-1)
+                    )
+
+                    query_loss = 1.0 - F.cosine_similarity(
+                        left_candidates["queries"][left_keep],
+                        right_candidates["queries"][right_partner],
+                        dim=-1,
+                        eps=1e-6,
+                    )
+
+                    combined = (
+                        self.cross_tile_consistency_box_weight * box_loss
+                        + self.cross_tile_consistency_logit_weight * logit_loss
+                        + self.cross_tile_consistency_embed_weight * query_loss
+                    )
+                    loss_terms.append((pair_weight * combined).mean())
+
+        if not loss_terms:
+            return {"loss_tile_consistency": zero}
+
+        return {"loss_tile_consistency": torch.stack(loss_terms).mean()}
+
+    def get_image_text_context(
+        self, text_features, labels=None, vis_cls_feat=None, extras=None
+    ):
         batch_size = 0
         device = self.query_anchor_base_xy.device
         dtype = self.init_spatial_queries.weight.dtype
@@ -874,7 +1242,34 @@ class STMDecoder(nn.Module):
             else:
                 contexts.append(default_context)
 
-        return torch.stack(contexts, dim=0)
+        context = torch.stack(contexts, dim=0)
+        proto_context, proto_blend = self._get_prototype_image_context(
+            extras=extras,
+            batch_size=batch_size,
+            device=device,
+            dtype=dtype,
+        )
+        if proto_context is not None and proto_blend > 0.0:
+            context = F.normalize(
+                (1.0 - proto_blend) * context + proto_blend * proto_context,
+                dim=-1,
+                eps=1e-6,
+            )
+
+        tile_context, tile_blend, _, _ = self._get_tile_global_context(
+            extras=extras,
+            batch_size=batch_size,
+            device=device,
+            dtype=dtype,
+        )
+        if tile_context is not None and tile_blend > 0.0:
+            context = F.normalize(
+                (1.0 - tile_blend) * context + tile_blend * tile_context,
+                dim=-1,
+                eps=1e-6,
+            )
+
+        return context
 
     def _get_prompt_adaptive_state(self, extras, batch_size, device, dtype):
         if not self.prompt_adaptive_queries:
@@ -929,6 +1324,21 @@ class STMDecoder(nn.Module):
                 (adaptive_count - min_count) * focus
             ).to(torch.long)
 
+        tile_context, _, coverage, edge = self._get_tile_global_context(
+            extras=extras,
+            batch_size=batch_size,
+            device=device,
+            dtype=dtype,
+        )
+        if tile_context is not None:
+            if coverage is not None:
+                coverage_factor = (0.65 + 0.35 * coverage.clamp(0.0, 1.0).sqrt()).view(
+                    -1
+                )
+                object_scale = object_scale * coverage_factor
+            if edge is not None:
+                focus = (focus + 0.15 * edge.clamp(0.0, 1.0)).clamp(0.0, 1.0)
+
         query_ids = torch.arange(adaptive_count, device=device).unsqueeze(0)
         active_mask = query_ids < active_counts.unsqueeze(1)
         return {
@@ -937,6 +1347,54 @@ class STMDecoder(nn.Module):
             "focus": focus,
             "object_scale": object_scale,
             "level_weights": level_weights,
+        }
+
+    def _get_class_partition_state(
+        self, text_features, text_context, extras, batch_size, device, dtype
+    ):
+        if not self.class_partition_queries:
+            return None
+        if text_context is None:
+            return None
+
+        text_bank = self._get_text_bank(text_features, device=device, dtype=dtype)
+        if text_bank is None or text_bank.numel() == 0:
+            return None
+
+        prompt_state = self._get_prompt_adaptive_state(
+            extras, batch_size=batch_size, device=device, dtype=dtype
+        )
+        start_idx = int(prompt_state["count"]) if prompt_state is not None else 0
+        available = max(0, self.num_queries - start_idx)
+        partition_count = int(round(self.num_queries * self.class_partition_query_ratio))
+        partition_count = max(0, min(available, partition_count))
+        if partition_count <= 0:
+            return None
+
+        topk = max(1, min(self.class_partition_topk, text_bank.size(0), partition_count))
+        if topk <= 0:
+            return None
+
+        context_norm = F.normalize(text_context, dim=-1, eps=1e-6)
+        text_norm = F.normalize(text_bank, dim=-1, eps=1e-6)
+        class_logits = torch.matmul(context_norm, text_norm.t())
+        top_scores, top_ids = torch.topk(class_logits, k=topk, dim=-1)
+        top_weights = torch.softmax(top_scores, dim=-1)
+
+        block_sizes = torch.full(
+            (topk,),
+            partition_count // topk,
+            device=device,
+            dtype=torch.long,
+        )
+        block_sizes[: partition_count % topk] += 1
+        return {
+            "start_idx": start_idx,
+            "count": partition_count,
+            "top_ids": top_ids,
+            "top_weights": top_weights,
+            "block_sizes": block_sizes,
+            "text_bank": text_bank,
         }
 
     def _apply_prompt_adaptive_priors(self, proposals, whwh, extras=None):
@@ -985,7 +1443,9 @@ class STMDecoder(nn.Module):
         proposals_norm = box_cxcywh_to_xyxy(boxes_cxcywh).clamp(0.0, 1.0)
         return proposals_norm * whwh[:, None, :]
 
-    def _decode_init_queries(self, whwh, cond=None, text_context=None, extras=None):
+    def _decode_init_queries(
+        self, whwh, cond=None, text_context=None, text_features=None, extras=None
+    ):
         if extras is None:
             extras = {}
 
@@ -1043,6 +1503,77 @@ class STMDecoder(nn.Module):
                 init_spatial_queries[:, :adaptive_count, :] = init_spatial_queries[
                     :, :adaptive_count, :
                 ] + active_mask * adaptive_bias * text_bias.unsqueeze(1)
+
+        class_partition = self._get_class_partition_state(
+            text_features=text_features,
+            text_context=text_context,
+            extras=extras,
+            batch_size=batch_size,
+            device=init_spatial_queries.device,
+            dtype=init_spatial_queries.dtype,
+        )
+        if (
+            class_partition is not None
+            and self.class_partition_query_proj is not None
+            and int(class_partition["count"]) > 0
+        ):
+            top_ids = class_partition["top_ids"]
+            text_bank = class_partition["text_bank"]
+            gather_idx = top_ids.unsqueeze(-1).expand(-1, -1, text_bank.size(-1))
+            top_text = torch.gather(
+                text_bank.unsqueeze(0).expand(batch_size, -1, -1), 1, gather_idx
+            )
+            top_bias = self.class_partition_query_proj(top_text)
+            cursor = int(class_partition["start_idx"])
+            for rank, block_size in enumerate(class_partition["block_sizes"].tolist()):
+                if block_size <= 0:
+                    continue
+                block_slice = slice(cursor, cursor + block_size)
+                profile = torch.linspace(
+                    1.0,
+                    0.5,
+                    block_size,
+                    device=init_spatial_queries.device,
+                    dtype=init_spatial_queries.dtype,
+                ).view(1, block_size, 1)
+                strength = class_partition["top_weights"][:, rank].view(
+                    batch_size, 1, 1
+                )
+                init_spatial_queries[:, block_slice, :] = init_spatial_queries[
+                    :, block_slice, :
+                ] + self.class_partition_scale * strength * profile * top_bias[
+                    :, rank : rank + 1, :
+                ]
+                cursor += block_size
+
+        tile_context, _, coverage, edge = self._get_tile_global_context(
+            extras=extras,
+            batch_size=batch_size,
+            device=init_spatial_queries.device,
+            dtype=init_spatial_queries.dtype,
+        )
+        if tile_context is not None and self.tile_query_proj is not None:
+            tile_bias = self.tile_query_proj(tile_context).unsqueeze(1)
+            strength = torch.full(
+                (batch_size, 1, 1),
+                self.tile_global_context_query_scale,
+                device=init_spatial_queries.device,
+                dtype=init_spatial_queries.dtype,
+            )
+            if coverage is not None:
+                strength = strength * (
+                    1.0 + 0.40 * (1.0 - coverage.clamp(0.0, 1.0)).view(-1, 1, 1)
+                )
+            if edge is not None:
+                strength = strength * (1.0 + 0.25 * edge.clamp(0.0, 1.0).view(-1, 1, 1))
+            profile = torch.linspace(
+                1.0,
+                0.45,
+                self.num_queries,
+                device=init_spatial_queries.device,
+                dtype=init_spatial_queries.dtype,
+            ).view(1, self.num_queries, 1)
+            init_spatial_queries = init_spatial_queries + strength * profile * tile_bias
 
         init_spatial_queries = torch.layer_norm(
             init_spatial_queries, normalized_shape=[init_spatial_queries.size(-1)]
@@ -1111,14 +1642,21 @@ class STMDecoder(nn.Module):
                 cond = self.get_prematched_text(cls_feat, text_features, labels)
 
         text_context = None
-        if self.use_text_guidance and self.text_query_proj is not None:
+        if self.use_text_guidance and (
+            self.text_query_proj is not None
+            or self.class_partition_query_proj is not None
+        ):
             text_context = self.get_image_text_context(
-                text_features, labels=labels, vis_cls_feat=cls_feat
+                text_features, labels=labels, vis_cls_feat=cls_feat, extras=extras
             )
 
         # Initialize queries
         proposal_boxes, spatial_queries, temporal_queries = self._decode_init_queries(
-            whwh, cond=cond, text_context=text_context, extras=extras
+            whwh,
+            cond=cond,
+            text_context=text_context,
+            text_features=text_features,
+            extras=extras,
         )
 
         inter_class_logits = []
@@ -1248,6 +1786,15 @@ class STMDecoder(nn.Module):
             output["aux_outputs"] = aux_outputs
 
         losses = self.criterion(output, targets)
+        losses.update(
+            self._compute_cross_tile_consistency_loss(
+                pred_logits=inter_class_logits[-1],
+                pred_boxes=inter_pred_bboxes[-1],
+                query_feats=spatial_queries,
+                whwh=whwh,
+                extras=extras,
+            )
+        )
 
         for k in losses.keys():
             if k in self.weight_dict:

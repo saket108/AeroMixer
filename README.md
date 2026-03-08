@@ -20,7 +20,7 @@ Supported detector (`MODEL.DET: AeroLiteDetector`) is:
 2. STM decoder head (`alphaction/modeling/stm_decoder/stm_decoder.py`)
 3. DETR-style Hungarian assignment + set losses
 
-In practical terms, `AeroLite-Det` is a lightweight ResNet-like CNN backbone with an FPN-style pyramid, a prompt-conditioned scale router, a query-based decoder head, and a native LiteText prompt encoder for image+text detection.
+In practical terms, `AeroLite-Det` is a lightweight ResNet-like CNN backbone with an FPN-style pyramid, a prompt-conditioned scale router, a defect prototype memory, class-partitioned query allocation, tile-global context fusion for tiled defect runs, a cross-tile consistency loss for overlapping tiles, a query-based decoder head, and a native LiteText prompt encoder for image+text detection.
 
 ### High-level Forward (Image Mode)
 
@@ -30,12 +30,17 @@ In practical terms, `AeroLite-Det` is a lightweight ResNet-like CNN backbone wit
 4. Feature levels are built as:
    - real `C3/C4/C5 -> FPN (P3/P4/P5/P6)` when backbone exposes intermediate maps
    - resized single-map pyramid fallback for backbones without intermediate maps
+   - optional `DefectPrototypeMemory` pools boxed regions into an EMA class bank and fuses them back into the prompt space
    - optional `ScaleTextRouter` reweights the pyramid using prompt context before decoding
+   - optional `TileGlobalContextFusion` infers tile position/full-image coverage context from tiled sample names and fuses that summary back into the multiscale path
 5. STM decoder runs multi-stage query refinement:
    - query attention + IoF bias
    - adaptive sampling/mixing
+   - class-partitioned query slots reserve part of the query bank for the most likely defect prompts
    - prompt-adaptive query priors for the routed query subset
+   - tile-global query bias blends surface-position context into text/query initialization for tiled inference
    - class logits + box delta prediction
+   - optional cross-tile consistency loss aligns overlapping sibling-tile predictions in full-image normalized space during training
 6. Training returns weighted losses; eval returns normalized boxes + scores + labels.
 
 ## Architecture Details
@@ -244,9 +249,9 @@ Utility script:
 
 ```bash
 python preprocess/build_open_vocab.py \
-  --annotations "C:/Users/tsake/OneDrive/Desktop/Aero_dataset/train.txt" "C:/Users/tsake/OneDrive/Desktop/Aero_dataset/test.txt" \
-  --out-closed "C:/Users/tsake/OneDrive/Desktop/Aero_dataset/annotations/vocab_closed.json" \
-  --out-open "C:/Users/tsake/OneDrive/Desktop/Aero_dataset/annotations/vocab_open.json" \
+  --annotations "data/Aero_dataset/train.txt" "data/Aero_dataset/test.txt" \
+  --out-closed "data/Aero_dataset/annotations/vocab_closed.json" \
+  --out-open "data/Aero_dataset/annotations/vocab_open.json" \
   --closed-ratio 0.8 \
   --prompt-template "a photo of {label}"
 ```
@@ -304,7 +309,7 @@ Professional local workflow (single command):
 ```bash
 python scripts/pipeline.py \
   --mode run \
-  --data "C:/Users/tsake/OneDrive/Desktop/Aero_dataset" \
+  --data "data/Aero_dataset" \
   --preset prod \
   --output-dir output/aero_dataset_run \
   --epochs 30 \
@@ -326,7 +331,7 @@ Small-object tiling (train + eval in one run):
 ```bash
 python scripts/pipeline.py \
   --mode run \
-  --data "C:/Users/tsake/OneDrive/Desktop/Aero_dataset" \
+  --data "data/Aero_dataset" \
   --preset prod \
   --output-dir output/aero_dataset_run_tiled \
   --epochs 30 \
@@ -369,7 +374,7 @@ Stable inference/eval pipeline:
 ```bash
 python scripts/pipeline.py \
   --mode eval \
-  --data "C:/Users/tsake/OneDrive/Desktop/Aero_dataset" \
+  --data "data/Aero_dataset" \
   --preset prod \
   --output-dir output/aero_dataset_inference \
   --model-weight checkpoints/model_final.pth
@@ -379,7 +384,7 @@ Dataset version freeze (for reproducibility records):
 
 ```bash
 python scripts/freeze_dataset_version.py \
-  --data "C:/Users/tsake/OneDrive/Desktop/Aero_dataset" \
+  --data "data/Aero_dataset" \
   --out output/dataset_version.json
 ```
 
@@ -404,7 +409,7 @@ Integrated threshold tuning after eval:
 ```bash
 python scripts/pipeline.py \
   --mode eval \
-  --data "C:/Users/tsake/OneDrive/Desktop/Aero_dataset" \
+  --data "data/Aero_dataset" \
   --preset prod \
   --output-dir output/aero_dataset_inference \
   --model-weight checkpoints/model_final.pth \

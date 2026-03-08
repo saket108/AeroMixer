@@ -127,6 +127,344 @@ class ScaleTextRouter(nn.Module):
         return routed_features, routing_summary
 
 
+class TileGlobalContextFusion(nn.Module):
+    """Fuse tile position metadata with pooled multiscale features."""
+
+    def __init__(
+        self,
+        feature_dim,
+        text_dim,
+        num_levels,
+        meta_dim=12,
+        hidden_dim=128,
+        level_gain=0.35,
+        blend=0.20,
+    ):
+        super().__init__()
+        self.num_levels = int(num_levels)
+        self.level_gain = float(level_gain)
+        self.blend = float(blend)
+        self.feature_proj = nn.Linear(int(feature_dim), int(hidden_dim))
+        self.meta_proj = nn.Sequential(
+            nn.Linear(int(meta_dim), int(hidden_dim)),
+            nn.LayerNorm(int(hidden_dim)),
+            nn.GELU(),
+        )
+        self.text_proj = nn.Linear(int(text_dim), int(hidden_dim), bias=False)
+        self.level_norm = nn.LayerNorm(int(hidden_dim))
+        self.level_logits = nn.Linear(int(hidden_dim), 1)
+        self.context_proj = nn.Linear(int(hidden_dim), int(text_dim))
+
+    def _pool_feature(self, feat):
+        if feat.dim() == 5:
+            feat = feat.mean(dim=2)
+        if feat.dim() != 4:
+            raise ValueError(
+                f"Expected tile context feature map to be 4D/5D, got shape={tuple(feat.shape)}"
+            )
+        return feat.flatten(2).mean(dim=-1)
+
+    def forward(self, features, tile_meta, text_context=None):
+        if not features or tile_meta is None:
+            return features, None
+
+        level_tokens = torch.stack(
+            [self._pool_feature(feat) for feat in features], dim=1
+        )
+        meta_context = self.meta_proj(tile_meta)
+        joint = self.feature_proj(level_tokens) + meta_context.unsqueeze(1)
+
+        if text_context is not None:
+            if text_context.ndim == 1:
+                text_context = text_context.unsqueeze(0)
+            joint = joint + self.text_proj(text_context).unsqueeze(1)
+
+        logits = self.level_logits(self.level_norm(torch.tanh(joint))).squeeze(-1)
+        level_weights = torch.softmax(logits, dim=1)
+
+        centered = (
+            level_weights - (1.0 / max(level_weights.size(1), 1))
+        ) * level_weights.size(1)
+        routed_features = []
+        for idx, feat in enumerate(features):
+            gate = 1.0 + self.level_gain * centered[:, idx]
+            gate = gate.clamp(min=0.50, max=2.00)
+            gate = gate.view(feat.size(0), *([1] * (feat.dim() - 1)))
+            routed_features.append(feat * gate)
+
+        fused_visual = (level_weights.unsqueeze(-1) * self.feature_proj(level_tokens)).sum(
+            dim=1
+        )
+        context = self.context_proj(torch.tanh(fused_visual + meta_context))
+        context = F.normalize(context, dim=-1, eps=1e-6)
+
+        summary = {
+            "context": context,
+            "blend": self.blend,
+            "level_weights": level_weights,
+            "coverage": tile_meta[:, 4],
+            "edge_proximity": tile_meta[:, 9],
+            "tile_meta": tile_meta,
+        }
+        return routed_features, summary
+
+
+class DefectPrototypeMemory(nn.Module):
+    """Learn class prototypes from boxed defect regions and fuse them into text prompts."""
+
+    def __init__(
+        self,
+        feature_dim,
+        text_dim,
+        num_classes,
+        momentum=0.90,
+        blend=0.35,
+        context_blend=0.25,
+    ):
+        super().__init__()
+        self.num_classes = int(num_classes)
+        self.momentum = float(momentum)
+        self.blend = float(blend)
+        self.context_blend = float(context_blend)
+        self.visual_proj = nn.Linear(int(feature_dim), int(text_dim), bias=False)
+        self.visual_norm = nn.LayerNorm(int(text_dim))
+        self.register_buffer(
+            "prototype_bank", torch.zeros(self.num_classes, int(text_dim))
+        )
+        self.register_buffer(
+            "prototype_counts", torch.zeros(self.num_classes, dtype=torch.float32)
+        )
+        self.register_buffer(
+            "prototype_initialized",
+            torch.zeros(self.num_classes, dtype=torch.bool),
+        )
+
+    def _prepare_text_bank(self, text_features, device, dtype):
+        if text_features is None:
+            return None
+        if not torch.is_tensor(text_features):
+            text_features = torch.as_tensor(text_features)
+        text_features = text_features.to(device=device, dtype=dtype)
+        if text_features.ndim == 1:
+            text_features = text_features.unsqueeze(0)
+        elif text_features.ndim == 3:
+            text_features = text_features.mean(dim=1)
+        elif text_features.ndim > 3:
+            text_features = text_features.reshape(-1, text_features.shape[-1])
+        if text_features.numel() == 0:
+            return None
+        if text_features.size(0) > self.num_classes:
+            return text_features[: self.num_classes]
+        if text_features.size(0) < self.num_classes:
+            fill = text_features.mean(dim=0, keepdim=True).expand(
+                self.num_classes - text_features.size(0), -1
+            )
+            return torch.cat([text_features, fill], dim=0)
+        return text_features
+
+    def _to_feature_map(self, feature_map):
+        if feature_map is None:
+            return None
+        if feature_map.dim() == 5:
+            feature_map = feature_map.mean(dim=2)
+        if feature_map.dim() != 4:
+            raise ValueError(
+                f"Expected 4D/5D prototype feature map, got shape={tuple(feature_map.shape)}"
+            )
+        return feature_map
+
+    def _extract_class_ids(self, label, device):
+        if label is None:
+            return None
+        label = torch.as_tensor(label, device=device)
+        if label.numel() == 0:
+            return None
+        if label.ndim == 1:
+            class_ids = label.long()
+        elif label.ndim == 2:
+            class_ids = torch.argmax(label, dim=-1).long()
+        else:
+            return None
+        class_ids = class_ids[(class_ids >= 0) & (class_ids < self.num_classes)]
+        return class_ids if class_ids.numel() > 0 else None
+
+    def _project_visual(self, visual_feats):
+        projected = self.visual_proj(visual_feats)
+        projected = self.visual_norm(projected)
+        return F.normalize(projected, dim=-1, eps=1e-6)
+
+    def _normalize_boxes(self, boxes_img, frame_size, device):
+        boxes = torch.as_tensor(boxes_img, dtype=torch.float32, device=device)
+        if boxes.numel() == 0:
+            return boxes.reshape(0, 4)
+        boxes = boxes.reshape(-1, 4)
+        if boxes.max() <= 1.5:
+            scale = frame_size.view(1, 4).to(device=device, dtype=boxes.dtype)
+            boxes = boxes * scale
+        return boxes
+
+    def _pool_box_features(self, feature_map, boxes, labels, whwh):
+        pooled_feats = []
+        pooled_labels = []
+        batch_size, channels, height, width = feature_map.shape
+        for idx in range(batch_size):
+            class_ids = None
+            if labels is not None and idx < len(labels):
+                class_ids = self._extract_class_ids(labels[idx], device=feature_map.device)
+            if class_ids is None or class_ids.numel() == 0:
+                continue
+
+            boxes_img = self._normalize_boxes(
+                boxes[idx],
+                frame_size=whwh[idx],
+                device=feature_map.device,
+            )
+            if boxes_img.numel() == 0:
+                continue
+
+            num_pairs = min(boxes_img.size(0), class_ids.numel())
+            if num_pairs <= 0:
+                continue
+
+            img_w = max(float(whwh[idx, 0].item()), 1.0)
+            img_h = max(float(whwh[idx, 1].item()), 1.0)
+            feat_map = feature_map[idx]
+            for box, class_id in zip(boxes_img[:num_pairs], class_ids[:num_pairs]):
+                x1 = int(torch.floor(box[0] / img_w * width).item())
+                y1 = int(torch.floor(box[1] / img_h * height).item())
+                x2 = int(torch.ceil(box[2] / img_w * width).item())
+                y2 = int(torch.ceil(box[3] / img_h * height).item())
+
+                x1 = max(0, min(width - 1, x1))
+                y1 = max(0, min(height - 1, y1))
+                x2 = max(x1 + 1, min(width, x2))
+                y2 = max(y1 + 1, min(height, y2))
+
+                region = feat_map[:, y1:y2, x1:x2]
+                if region.numel() == 0:
+                    region = feat_map[:, y1 : y1 + 1, x1 : x1 + 1]
+                pooled_feats.append(region.mean(dim=(1, 2)))
+                pooled_labels.append(int(class_id.item()))
+
+        if not pooled_feats:
+            return None, None
+        return torch.stack(pooled_feats, dim=0), torch.tensor(
+            pooled_labels, device=feature_map.device, dtype=torch.long
+        )
+
+    def _update_memory(self, feature_map, boxes, labels, whwh):
+        if boxes is None or labels is None:
+            return
+        pooled_feats, pooled_labels = self._pool_box_features(
+            feature_map, boxes=boxes, labels=labels, whwh=whwh
+        )
+        if pooled_feats is None or pooled_labels is None or pooled_feats.numel() == 0:
+            return
+
+        visual_proto = self._project_visual(pooled_feats.detach())
+        with torch.no_grad():
+            for class_id in pooled_labels.unique(sorted=True):
+                cls_mask = pooled_labels == class_id
+                cls_proto = visual_proto[cls_mask].mean(dim=0)
+                bank_idx = int(class_id.item())
+                if self.prototype_initialized[bank_idx]:
+                    updated = (
+                        self.momentum * self.prototype_bank[bank_idx]
+                        + (1.0 - self.momentum) * cls_proto
+                    )
+                else:
+                    updated = cls_proto
+                self.prototype_bank[bank_idx] = F.normalize(
+                    updated, dim=0, eps=1e-6
+                )
+                self.prototype_counts[bank_idx] += float(cls_mask.sum().item())
+                self.prototype_initialized[bank_idx] = True
+
+    def _build_similarity_context(self, feature_map, prototype_bank):
+        pooled = feature_map.flatten(2).mean(dim=-1)
+        projected = self._project_visual(pooled)
+        logits = torch.matmul(projected, prototype_bank.t())
+        weights = torch.softmax(logits, dim=-1)
+        return torch.matmul(weights, prototype_bank)
+
+    def _build_label_context(self, labels, prototype_bank, device, dtype):
+        if labels is None:
+            return None
+        contexts = []
+        default_context = prototype_bank.mean(dim=0)
+        for label in labels:
+            class_ids = self._extract_class_ids(label, device=device)
+            if class_ids is None or class_ids.numel() == 0:
+                contexts.append(default_context)
+                continue
+            valid_mask = self.prototype_initialized[class_ids].to(device=device)
+            if bool(valid_mask.any()):
+                contexts.append(prototype_bank[class_ids[valid_mask]].mean(dim=0))
+            else:
+                contexts.append(default_context)
+        if not contexts:
+            return None
+        return torch.stack(contexts, dim=0).to(device=device, dtype=dtype)
+
+    def forward(self, text_features, feature_map, whwh, boxes=None, labels=None):
+        feature_map = self._to_feature_map(feature_map)
+        if feature_map is None:
+            return text_features, None
+
+        text_bank = self._prepare_text_bank(
+            text_features,
+            device=feature_map.device,
+            dtype=feature_map.dtype,
+        )
+        if text_bank is None:
+            return text_features, None
+
+        if self.training:
+            self._update_memory(feature_map, boxes=boxes, labels=labels, whwh=whwh)
+
+        initialized = self.prototype_initialized.to(device=feature_map.device)
+        if not bool(initialized.any()):
+            return text_bank, None
+
+        prototype_bank = self.prototype_bank.to(
+            device=feature_map.device,
+            dtype=text_bank.dtype,
+        )
+        fused_text = text_bank.clone()
+        fused_text[initialized] = F.normalize(
+            (1.0 - self.blend) * text_bank[initialized]
+            + self.blend * prototype_bank[initialized],
+            dim=-1,
+            eps=1e-6,
+        )
+
+        similarity_context = self._build_similarity_context(
+            feature_map, prototype_bank[initialized]
+        )
+        label_context = self._build_label_context(
+            labels=labels,
+            prototype_bank=prototype_bank,
+            device=feature_map.device,
+            dtype=text_bank.dtype,
+        )
+        image_context = similarity_context
+        if label_context is not None and label_context.size(0) == similarity_context.size(0):
+            image_context = F.normalize(
+                (1.0 - self.context_blend) * label_context
+                + self.context_blend * similarity_context,
+                dim=-1,
+                eps=1e-6,
+            )
+
+        summary = {
+            "image_context": image_context,
+            "context_blend": self.context_blend,
+            "initialized_mask": initialized,
+            "counts": self.prototype_counts.to(device=feature_map.device),
+        }
+        return fused_text, summary
+
+
 SUPPORTED_DETECTORS = ("AeroLiteDetector", "STMDetector")
 
 
@@ -196,6 +534,27 @@ class AeroLiteDetector(nn.Module):
                     nn.ReLU(inplace=True),
                 )
             self.scale_text_router = None
+            self.tile_global_context = None
+            self.prototype_memory = None
+            if uses_text_branch(cfg) and bool(
+                getattr(cfg.MODEL.STM, "PROTOTYPE_MEMORY", False)
+            ):
+                self.prototype_memory = DefectPrototypeMemory(
+                    feature_dim=hidden_dim,
+                    text_dim=_resolve_text_encoder_dim(cfg),
+                    num_classes=int(cfg.MODEL.STM.OBJECT_CLASSES),
+                    momentum=float(
+                        getattr(cfg.MODEL.STM, "PROTOTYPE_MEMORY_MOMENTUM", 0.90)
+                    ),
+                    blend=float(
+                        getattr(cfg.MODEL.STM, "PROTOTYPE_MEMORY_BLEND", 0.35)
+                    ),
+                    context_blend=float(
+                        getattr(
+                            cfg.MODEL.STM, "PROTOTYPE_MEMORY_CONTEXT_BLEND", 0.25
+                        )
+                    ),
+                )
             if uses_text_branch(cfg) and bool(
                 getattr(cfg.MODEL.STM, "SCALE_TEXT_ROUTING", False)
             ):
@@ -211,8 +570,26 @@ class AeroLiteDetector(nn.Module):
                         getattr(cfg.MODEL.STM, "SCALE_TEXT_ROUTING_TEMP", 1.0)
                     ),
                 )
+            if uses_text_branch(cfg) and bool(
+                getattr(cfg.MODEL.STM, "TILE_GLOBAL_CONTEXT", False)
+            ):
+                self.tile_global_context = TileGlobalContextFusion(
+                    feature_dim=hidden_dim,
+                    text_dim=_resolve_text_encoder_dim(cfg),
+                    num_levels=len(self.pyramid_scales),
+                    hidden_dim=int(
+                        getattr(cfg.MODEL.STM, "TILE_GLOBAL_CONTEXT_HIDDEN", 128)
+                    ),
+                    level_gain=float(
+                        getattr(cfg.MODEL.STM, "TILE_GLOBAL_CONTEXT_LEVEL_GAIN", 0.35)
+                    ),
+                    blend=float(
+                        getattr(cfg.MODEL.STM, "TILE_GLOBAL_CONTEXT_BLEND", 0.20)
+                    ),
+                )
         else:
             self.scale_text_router = None
+            self.tile_global_context = None
 
         logger.info(
             "AeroLiteDetector initialized in image-only detection mode (backbone=%s).",
@@ -319,6 +696,55 @@ class AeroLiteDetector(nn.Module):
             return self._encode_backbone_text(device=device, dtype=dtype)
 
         return None
+
+    def _build_tile_meta_tensor(self, extras, batch_size, device, dtype):
+        if not isinstance(extras, dict):
+            return None
+
+        raw_meta = extras.get("tile_meta")
+        if raw_meta is None:
+            return None
+        if isinstance(raw_meta, dict):
+            raw_meta = [raw_meta]
+        if not isinstance(raw_meta, (list, tuple)):
+            return None
+
+        meta_vectors = []
+        has_tiled_sample = False
+        for idx in range(batch_size):
+            item = raw_meta[idx] if idx < len(raw_meta) else None
+            if not isinstance(item, dict) or not bool(item.get("is_tiled", False)):
+                meta_vectors.append(torch.zeros(10, device=device, dtype=dtype))
+                continue
+
+            has_tiled_sample = True
+            position = torch.as_tensor(
+                item.get("position_norm", [0.5, 0.5]), device=device, dtype=dtype
+            ).reshape(-1)[:2]
+            size = torch.as_tensor(
+                item.get("size_norm", [1.0, 1.0]), device=device, dtype=dtype
+            ).reshape(-1)[:2]
+            border = torch.as_tensor(
+                item.get("border_norm", [0.0, 0.0, 0.0, 0.0]),
+                device=device,
+                dtype=dtype,
+            ).reshape(-1)[:4]
+            coverage = torch.tensor(
+                [float(item.get("coverage_ratio", 1.0))], device=device, dtype=dtype
+            )
+            edge = torch.tensor(
+                [float(item.get("edge_proximity", 0.0))], device=device, dtype=dtype
+            )
+            grid = torch.as_tensor(
+                item.get("grid_position", [0.0, 0.0]), device=device, dtype=dtype
+            ).reshape(-1)[:2]
+            meta_vectors.append(
+                torch.cat([position, size, coverage, border, edge, grid], dim=0)
+            )
+
+        if not has_tiled_sample:
+            return None
+        return torch.stack(meta_vectors, dim=0)
 
     def _extract_class_ids(self, label, device, num_classes):
         if label is None:
@@ -485,20 +911,50 @@ class AeroLiteDetector(nn.Module):
         text_features = self._resolve_text_features(
             extras, device=primary_inputs.device, dtype=feature_dtype
         )
-        if self.scale_text_router is not None and text_features is not None:
-            routing_text = self._build_text_context(
+        text_context = None
+        if self.prototype_memory is not None and text_features is not None:
+            text_features, prototype_summary = self.prototype_memory(
+                text_features=text_features,
+                feature_map=mapped_features[0],
+                whwh=whwh,
+                boxes=boxes,
+                labels=labels,
+            )
+            if prototype_summary is not None:
+                extras = dict(extras)
+                extras["prototype_memory"] = prototype_summary
+
+        if text_features is not None and (
+            self.scale_text_router is not None or self.tile_global_context is not None
+        ):
+            text_context = self._build_text_context(
                 text_features,
                 labels=labels,
                 batch_size=primary_inputs.size(0),
                 device=primary_inputs.device,
                 dtype=feature_dtype,
             )
+
+        if self.scale_text_router is not None and text_context is not None:
             mapped_features, routing_summary = self.scale_text_router(
-                mapped_features, routing_text
+                mapped_features, text_context
             )
             if routing_summary is not None:
                 extras = dict(extras)
                 extras["scale_routing"] = routing_summary
+        if self.tile_global_context is not None:
+            tile_meta = self._build_tile_meta_tensor(
+                extras,
+                batch_size=primary_inputs.size(0),
+                device=primary_inputs.device,
+                dtype=feature_dtype,
+            )
+            mapped_features, tile_summary = self.tile_global_context(
+                mapped_features, tile_meta, text_context=text_context
+            )
+            if tile_summary is not None:
+                extras = dict(extras)
+                extras["tile_global_context"] = tile_summary
 
         return self.stm_head(
             mapped_features,

@@ -46,6 +46,7 @@ Returned samples keep the same tensor structure expected by the rest of the pipe
 import os
 import json
 import logging
+import re
 import numpy as np
 import torch
 import xml.etree.ElementTree as ET
@@ -56,6 +57,7 @@ from alphaction.dataset.datasets.cv2_transform import PreprocessWithBoxes
 
 logger = logging.getLogger(__name__)
 VALID_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
+_TILE_KEY_RE = re.compile(r"^(?P<base>.+)__x(?P<x>\d+)_y(?P<y>\d+)$")
 
 
 class ImageDataset(torch.utils.data.Dataset):
@@ -133,6 +135,7 @@ class ImageDataset(torch.utils.data.Dataset):
             # Generate text prompts for each class
             self.text_prompts = self._generate_text_prompts()
 
+        self.tile_metadata = self._build_tile_metadata_map(self.image_list)
         self.samples = []
         for img_rel in self.image_list:
             ann = self.annos[img_rel]
@@ -155,6 +158,7 @@ class ImageDataset(torch.utils.data.Dataset):
                     "labels": labels,
                     "severity": severities,
                     "annotation_extras": sample_extras,
+                    "tile_meta": self.tile_metadata.get(img_rel),
                 }
             )
 
@@ -269,6 +273,8 @@ class ImageDataset(torch.utils.data.Dataset):
             result["severity"] = sample["severity"]
         if sample.get("annotation_extras", None) is not None:
             result["annotation_extras"] = sample["annotation_extras"]
+        if sample.get("tile_meta", None) is not None:
+            result["tile_meta"] = sample["tile_meta"]
         
         # Add multimodal information if enabled
         if self.multimodal:
@@ -351,6 +357,8 @@ class ImageDataset(torch.utils.data.Dataset):
             extras["severity"] = np.asarray(severity_vals, dtype=np.float32)
         if annotation_extras is not None:
             extras["annotation_extras"] = annotation_extras
+        if sample.get("tile_meta", None) is not None:
+            extras["tile_meta"] = sample["tile_meta"]
 
         boxes_out = boxes_proc if boxes_proc is None else boxes_proc.astype(np.float32)
         
@@ -369,6 +377,92 @@ class ImageDataset(torch.utils.data.Dataset):
             im = utils.retry_load_images([img_path], backend="cv2")[0]
             self._shape_cache[image_rel_path] = im.shape[:2]
         return self._shape_cache[image_rel_path]
+
+    def _parse_tiled_key(self, image_rel_path):
+        stem = os.path.splitext(str(image_rel_path))[0]
+        match = _TILE_KEY_RE.match(stem)
+        if match is None:
+            return None
+        return match.group("base"), int(match.group("x")), int(match.group("y"))
+
+    def _build_tile_metadata_map(self, image_list):
+        groups = defaultdict(list)
+        for img_rel in image_list:
+            parsed = self._parse_tiled_key(img_rel)
+            if parsed is None:
+                continue
+            base_key, x_offset, y_offset = parsed
+            height, width = self._get_image_shape(img_rel)
+            groups[base_key].append(
+                {
+                    "image_rel": img_rel,
+                    "x": int(x_offset),
+                    "y": int(y_offset),
+                    "w": int(width),
+                    "h": int(height),
+                }
+            )
+
+        metadata = {}
+        for base_key, entries in groups.items():
+            if not entries:
+                continue
+
+            full_width = max(int(item["x"]) + int(item["w"]) for item in entries)
+            full_height = max(int(item["y"]) + int(item["h"]) for item in entries)
+            full_width = max(full_width, 1)
+            full_height = max(full_height, 1)
+
+            x_positions = sorted({int(item["x"]) for item in entries})
+            y_positions = sorted({int(item["y"]) for item in entries})
+            x_lookup = {value: idx for idx, value in enumerate(x_positions)}
+            y_lookup = {value: idx for idx, value in enumerate(y_positions)}
+            x_den = max(len(x_positions) - 1, 1)
+            y_den = max(len(y_positions) - 1, 1)
+
+            for item in entries:
+                tile_w = int(item["w"])
+                tile_h = int(item["h"])
+                x_offset = int(item["x"])
+                y_offset = int(item["y"])
+                center_x = x_offset + 0.5 * tile_w
+                center_y = y_offset + 0.5 * tile_h
+                left = x_offset / float(full_width)
+                top = y_offset / float(full_height)
+                right = max(0.0, float(full_width - (x_offset + tile_w))) / float(
+                    full_width
+                )
+                bottom = max(0.0, float(full_height - (y_offset + tile_h))) / float(
+                    full_height
+                )
+                coverage = (tile_w * tile_h) / float(full_width * full_height)
+                edge_proximity = 1.0 - min(left, top, right, bottom, 1.0)
+
+                metadata[item["image_rel"]] = {
+                    "is_tiled": True,
+                    "base_image_id": base_key,
+                    "tile_offset_xy": [x_offset, y_offset],
+                    "tile_size_wh": [tile_w, tile_h],
+                    "full_size_wh": [full_width, full_height],
+                    "position_norm": [
+                        center_x / float(full_width),
+                        center_y / float(full_height),
+                    ],
+                    "offset_norm": [left, top],
+                    "size_norm": [
+                        tile_w / float(full_width),
+                        tile_h / float(full_height),
+                    ],
+                    "border_norm": [left, top, right, bottom],
+                    "coverage_ratio": coverage,
+                    "edge_proximity": edge_proximity,
+                    "grid_position": [
+                        x_lookup.get(x_offset, 0) / float(x_den),
+                        y_lookup.get(y_offset, 0) / float(y_den),
+                    ],
+                }
+
+        return metadata
 
     def _load_annotations(self, split):
         loaders = {

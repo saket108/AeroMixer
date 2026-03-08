@@ -160,6 +160,50 @@ class TestImageDatasetSmoke(unittest.TestCase):
             )
             self.assertEqual(extras["annotation_extras"][0]["category_name"], "dent")
 
+    def test_infers_tile_metadata_from_tiled_yolo_filenames(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            image_dir = root / "images" / "train"
+            label_dir = root / "labels" / "train"
+            image_dir.mkdir(parents=True, exist_ok=True)
+            label_dir.mkdir(parents=True, exist_ok=True)
+
+            left = np.zeros((32, 32, 3), dtype=np.uint8)
+            right = np.zeros((32, 32, 3), dtype=np.uint8)
+            self.assertTrue(cv2.imwrite(str(image_dir / "panel__x0_y0.jpg"), left))
+            self.assertTrue(cv2.imwrite(str(image_dir / "panel__x32_y0.jpg"), right))
+            (label_dir / "panel__x0_y0.txt").write_text(
+                "0 0.5 0.5 0.25 0.25\n", encoding="utf-8"
+            )
+            (label_dir / "panel__x32_y0.txt").write_text(
+                "0 0.5 0.5 0.25 0.25\n", encoding="utf-8"
+            )
+
+            cfg = global_cfg.clone()
+            cfg.defrost()
+            cfg.DATA.INPUT_TYPE = "image"
+            cfg.DATA.PATH_TO_DATA_DIR = str(root)
+            cfg.DATA.FRAME_DIR = "images"
+            cfg.DATA.NUM_FRAMES = 1
+            cfg.DATA.SAMPLING_RATE = 1
+            cfg.DATA.ANNOTATION_FORMAT = "yolo"
+            cfg.DATA.OPEN_VOCABULARY = False
+            cfg.MODEL.BACKBONE.PATHWAYS = 1
+            cfg.TEST.EVAL_OPEN = False
+            cfg.freeze()
+
+            dataset = ImageDataset(cfg, split="train")
+            self.assertEqual(len(dataset), 2)
+
+            _, _, _, _, _, extras_left, _ = dataset[0]
+            tile_meta = extras_left["tile_meta"]
+            self.assertTrue(tile_meta["is_tiled"])
+            self.assertTrue(str(tile_meta["base_image_id"]).endswith("panel"))
+            self.assertEqual(tile_meta["full_size_wh"], [64, 32])
+            self.assertAlmostEqual(tile_meta["position_norm"][0], 0.25, places=5)
+            self.assertAlmostEqual(tile_meta["position_norm"][1], 0.50, places=5)
+            self.assertAlmostEqual(tile_meta["coverage_ratio"], 0.50, places=5)
+
 
 if __name__ == "__main__":
     unittest.main()

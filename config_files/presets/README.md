@@ -8,4 +8,4 @@ These are the only preset files meant for normal train/eval use:
 `scripts/pipeline.py` defaults to `full`.
 
 Canonical dataset root for the active presets:
-- `C:/Users/tsake/OneDrive/Desktop/Aero_dataset`
+- `data/Aero_dataset`
