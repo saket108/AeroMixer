@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a tiled YOLO dataset for small-object training/evaluation.
+"""Internal tiling helper for small-object training/evaluation.
 
 Input can be YOLO split-first or images-first layouts.
 Output is always split-first:

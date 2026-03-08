@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""YOLO-like one-command training launcher for AeroMixer.
+"""Internal dataset preparation/training helper for AeroMixer.
 
-This wrapper accepts a dataset path (zip/folder/data.yaml/json), detects layout/format,
+This helper accepts a dataset path (zip/folder/data.yaml/json), detects layout/format,
 optionally creates train/val/test splits, infers class count, and launches train_net.py
 with the required config overrides.
 """

@@ -3,7 +3,7 @@ import argparse
 import torch
 import cv2
 
-from alphaction.config import cfg
+from alphaction.config import cfg, uses_text_branch
 from alphaction.modeling.detector import build_detection_model
 from alphaction.utils.checkpoint import ActionCheckpointer
 from alphaction.dataset.datasets.cv2_transform import PreprocessWithBoxes
@@ -88,7 +88,7 @@ def main():
 
     # prepare readable labels
     # if open-vocab is used, try to get text vocab from backbone; otherwise fallback to numeric labels
-    if cfg.DATA.OPEN_VOCABULARY and hasattr(model.backbone, 'text_encoder') and hasattr(model.backbone.text_encoder, 'text_data'):
+    if uses_text_branch(cfg) and hasattr(model.backbone, 'text_encoder') and hasattr(model.backbone.text_encoder, 'text_data'):
         try:
             vocab = list(model.backbone.text_encoder.text_data.keys())
         except Exception:

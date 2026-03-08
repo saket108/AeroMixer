@@ -7,13 +7,14 @@ import os
 
 import torch
 from torch.utils.collect_env import get_pretty_env_info
-from alphaction.config import cfg
+from alphaction.config import cfg, uses_text_branch
 from alphaction.dataset import make_data_loader
 from alphaction.solver import make_lr_scheduler, make_optimizer
 from alphaction.engine.inference import inference
 from alphaction.engine.trainer import do_train
 from alphaction.engine.feature_extraction import do_feature_extraction
 from alphaction.modeling.detector import build_detection_model
+from alphaction.modeling.runtime import configure_text_encoder
 from alphaction.utils.checkpoint import ActionCheckpointer
 from alphaction.utils.comm import synchronize, get_rank, setup_distributed
 from alphaction.utils.logger import setup_logger, setup_tblogger
@@ -80,9 +81,8 @@ def train(cfg, local_rank, distributed, tblogger=None, transfer_weight=False, ad
                                               adjust_scheduler=adjust_lr, no_head=no_head)
     arguments.update(extra_checkpoint_data)
     
-    if cfg.DATA.OPEN_VOCABULARY:
-        model_this = model.module if distributed else model
-        model_this.backbone.text_encoder.set_vocabulary(vocabulary_train)
+    if uses_text_branch(cfg):
+        configure_text_encoder(model, vocabulary_train)
 
     checkpoint_period = cfg.SOLVER.CHECKPOINT_PERIOD * iter_per_epoch if 'debug' not in output_dir else 1
     val_after = cfg.SOLVER.EVAL_AFTER * iter_per_epoch if 'debug' not in output_dir else 0

@@ -5,7 +5,7 @@
 The Docker image entrypoint is:
 
 ```bash
-python scripts/inference_pipeline.py
+python scripts/pipeline.py --mode eval
 ```
 
 ## Required arguments

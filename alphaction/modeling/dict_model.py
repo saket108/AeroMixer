@@ -44,7 +44,8 @@ class DictLearn(nn.Module):
             Gamma, residual, errIHT = IHT(Y,self.W,K, self.sc_iters)
         elif self.SC == 'FISTA':
             Gamma, residual, errIHT = FISTA(Y,self.W,K, self.sc_iters)
-        else: print("Oops!")
+        else:
+            raise ValueError(f"Unsupported sparse coding method: {self.SC}")
         
         # Reconstructing
         self.W.requires_grad_(True)

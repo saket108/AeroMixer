@@ -54,6 +54,7 @@ _C.DATA.REVERSE_INPUT_CHANNEL = False
 _C.DATA.DATASETS = ['images']
 
 _C.DATA.OPEN_VOCABULARY = False
+_C.DATA.MULTIMODAL = False
 # Optional generic vocab files for open-vocabulary text prompts.
 _C.DATA.VOCAB_FILE = ""
 _C.DATA.VOCAB_OPEN_FILE = ""
@@ -75,7 +76,7 @@ _C.DATA.TEXT.MAX_LENGTH = 77
 # Use {class_name} as placeholder for class name
 _C.DATA.TEXT.PROMPT_TEMPLATE = "a photo of {}"
 
-# Whether to use CLIP text encoder for text features
+# Legacy field name retained for compatibility; active runtime uses LiteText.
 _C.DATA.TEXT.USE_CLIP_ENCODER = True
 
 # Text augmentation options
@@ -127,7 +128,7 @@ _C.DATALOADER.ASPECT_RATIO_GROUPING = False
 _C.MODEL = CN()
 
 _C.MODEL.WEIGHT = ""
-_C.MODEL.DET = "STMDetector"
+_C.MODEL.DET = "AeroLiteDetector"
 _C.MODEL.MULTI_LABEL_ACTION = False
 _C.MODEL.PRE_EXTRACT_FEAT = False
 _C.MODEL.USE_ROI_FEAT = False
@@ -136,9 +137,8 @@ _C.MODEL.USE_ROI_FEAT = False
 # Backbone options
 # ---------------------------------------------------------------------------- #
 _C.MODEL.BACKBONE = CN()
-# The backbone conv body to use
-# Available backbone conv-body should be registered in modeling.backbone.backbone.py
-_C.MODEL.BACKBONE.CONV_BODY = "ImageResNet-50"
+# Supported public backbones: AeroLite-Det-T, AeroLite-Det-S, AeroLite-Det-B
+_C.MODEL.BACKBONE.CONV_BODY = "AeroLite-Det-S"
 _C.MODEL.BACKBONE.PATHWAYS = 1
 _C.MODEL.BACKBONE.FROZEN_BN = False
 _C.MODEL.BACKBONE.FREEZE_PRETRAINED_VISUAL = True
@@ -348,6 +348,11 @@ _C.MODEL.STM.FUSE_CLS = False
 _C.MODEL.STM.FUSE_METHOD = ''
 _C.MODEL.STM.FUSE_FACTOR = -1.0
 _C.MODEL.STM.CHN_WEIGHT = 1.0
+_C.MODEL.STM.TEXT_SCORE_FUSION = False
+_C.MODEL.STM.TEXT_SCORE_FUSION_ALPHA = 0.35
+_C.MODEL.STM.TEXT_LOGIT_SCALE = 12.0
+_C.MODEL.STM.TEXT_QUERY_COND = False
+_C.MODEL.STM.TEXT_QUERY_COND_SCALE = 0.20
 
 _C.MODEL.STM.PRETRAIN_ACTION = False
 _C.MODEL.STM.DeST = False
@@ -359,7 +364,7 @@ _C.MODEL.STM.CLASS_WEIGHT_MIN = 0.25
 _C.MODEL.STM.CLASS_WEIGHT_MAX = 4.0
 _C.MODEL.STM.CLASS_WEIGHT_EMA = 0.9
 
-_C.MODEL.TEXT_ENCODER = ""  # CLIP or CLIPViP
+_C.MODEL.TEXT_ENCODER = "LITE_TEXT"
 _C.MODEL.USE_PRIOR_MAP = False
 _C.MODEL.PRIOR_BOXES_INIT = ''
 
@@ -368,68 +373,16 @@ _C.MODEL.FOCAL_LOSS.ALPHA = 0.25
 _C.MODEL.FOCAL_LOSS.GAMMA = 2.0
 
 
-# CLIP
-_C.MODEL.CLIP = CN()
-_C.MODEL.CLIP.ARCH = 'ViT-B/16'
-_C.MODEL.CLIP.LEN_CONTEXT_CLS = 24
-_C.MODEL.CLIP.LEN_CONTEXT_PROMPT = 8
-_C.MODEL.CLIP.CONTEXT_INIT = 'a photo of '
-_C.MODEL.CLIP.SOFT_PROMPT = True
-_C.MODEL.CLIP.ENABLE_POS_EMBED = True
-_C.MODEL.CLIP.EMBED_DIM = 768
-_C.MODEL.CLIP.USE_CHECKPOINT = True
-_C.MODEL.CLIP.FREEZE_TEXT_BACKBONE = True
-_C.MODEL.CLIP.CAM_SAMPLING = 'topk'
-_C.MODEL.CLIP.CAM_METHOD = ''
-_C.MODEL.CLIP.USE_PERSON_EMBED = False
-
-# Multimodal CAM specific settings
-_C.MODEL.CLIP.CAM = CN()
-_C.MODEL.CLIP.CAM.METHOD = 'ritsm'  # Default CAM method for CLIP
-_C.MODEL.CLIP.CAM.ATTN_GRAD = True
-_C.MODEL.CLIP.CAM.USE_TEXT = True  # Enable text input for CAM
-
-
-# CLIP-ViP
-_C.MODEL.CLIPViP = CN()
-_C.MODEL.CLIPViP.ARCH = 'ViP-B/16'
-_C.MODEL.CLIPViP.CLIP_NAME = "openai/clip-vit-base-patch16"  # load from huggingface
-_C.MODEL.CLIPViP.WEIGHT = "pretrained/pretrain_clipvip_base_16.pt"
-_C.MODEL.CLIPViP.TEMPORAL_SIZE = 12
-_C.MODEL.CLIPViP.TEMPORAL_WINSIZE = 1
-_C.MODEL.CLIPViP.USE_TEMPORAL_EMBED = True
-_C.MODEL.CLIPViP.LOGIT_SCALE_INIT = 4.6
-_C.MODEL.CLIPViP.ADD_CLS_NUM = 3
-_C.MODEL.CLIPViP.CONTEXT_INIT = 'a photo of '
-_C.MODEL.CLIPViP.LEN_CONTEXT = 8
-_C.MODEL.CLIPViP.EMBED_DIM = 512
-_C.MODEL.CLIPViP.FREEZE_TEXT_BACKBONE = True
-_C.MODEL.CLIPViP.SOFT_PROMPT = False
-_C.MODEL.CLIPViP.ST_CROSS_ATTN = False
-_C.MODEL.CLIPViP.NUM_XATTN = 1
-_C.MODEL.CLIPViP.FINETUNE_ADDED_CLS = False
-_C.MODEL.CLIPViP.USE_ATTN = False
-_C.MODEL.CLIPViP.USE_GRAD = False
-_C.MODEL.CLIPViP.USE_ATTN_LAST = False
-_C.MODEL.CLIPViP.CAM_METHOD = ''
-_C.MODEL.CLIPViP.CAM_SAMPLING = 'topk'
-_C.MODEL.CLIPViP.USE_PERSON_EMBED = False
-
-# Multimodal CAM specific settings for CLIP-ViP
-_C.MODEL.CLIPViP.CAM = CN()
-_C.MODEL.CLIPViP.CAM.METHOD = 'ritsm_clipvip'  # Default CAM method for CLIP-ViP
-_C.MODEL.CLIPViP.CAM.ATTN_GRAD = True
-_C.MODEL.CLIPViP.CAM.USE_TEXT = True  # Enable text input for CAM
-
-
-_C.MODEL.ViCLIP = CN()
-_C.MODEL.ViCLIP.ARCH = 'ViT-L/14'
-_C.MODEL.ViCLIP.WEIGHT_FILE = 'ViClip-InternVid-10M-FLT.pth'
-_C.MODEL.ViCLIP.EMBED_DIM = 768
-_C.MODEL.ViCLIP.CONTEXT_INIT = ''
-_C.MODEL.ViCLIP.CAM_METHOD = ''
-_C.MODEL.ViCLIP.USE_ATTN = False
-_C.MODEL.ViCLIP.CAM_SAMPLING = 'topk'
+_C.MODEL.LITE_TEXT = CN()
+_C.MODEL.LITE_TEXT.EMBED_DIM = 256
+_C.MODEL.LITE_TEXT.MAX_TOKENS = 12
+_C.MODEL.LITE_TEXT.MAX_VARIANTS = 4
+_C.MODEL.LITE_TEXT.CONTEXT_TOKENS = 4
+_C.MODEL.LITE_TEXT.VOCAB_SIZE = 4096
+_C.MODEL.LITE_TEXT.NUM_LAYERS = 2
+_C.MODEL.LITE_TEXT.NUM_HEADS = 4
+_C.MODEL.LITE_TEXT.FFN_DIM = 512
+_C.MODEL.LITE_TEXT.DROPOUT = 0.0
 
 # ---------------------------------------------------------------------------- #
 # Solver

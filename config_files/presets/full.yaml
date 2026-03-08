@@ -11,6 +11,7 @@ DATA:
   STD: [0.26862954, 0.26130258, 0.27577711]
   DATASETS: ['aircraft']
   OPEN_VOCABULARY: False
+  MULTIMODAL: True
   # Keep more spatial detail for small defects.
   TRAIN_MIN_SCALES: [512, 640]
   TEST_MIN_SCALES: [640]
@@ -18,11 +19,23 @@ DATA:
 MODEL:
   MULTI_LABEL_ACTION: False
   PRE_EXTRACT_FEAT: False
+  TEXT_ENCODER: "LITE_TEXT"
 
   BACKBONE:
-    # Finer patching improves thin-crack and small-defect sensitivity.
-    CONV_BODY: "ViT-B/16"
+    # Default balanced AeroLite variant for image+text detection.
+    CONV_BODY: "AeroLite-Det-S"
     PATHWAYS: 1
+
+  LITE_TEXT:
+    EMBED_DIM: 256
+    MAX_TOKENS: 12
+    MAX_VARIANTS: 4
+    CONTEXT_TOKENS: 4
+    VOCAB_SIZE: 4096
+    NUM_LAYERS: 2
+    NUM_HEADS: 4
+    FFN_DIM: 512
+    DROPOUT: 0.0
 
   # ----------- IMPORTANT PART (Detection Mode) ----------
   STM:
@@ -53,6 +66,11 @@ MODEL:
     CLASS_WEIGHT_MAX: 4.0
     CLASS_WEIGHT_EMA: 0.9
     SCORE_THRESHOLD: 0.05
+    TEXT_SCORE_FUSION: True
+    TEXT_SCORE_FUSION_ALPHA: 0.40
+    TEXT_LOGIT_SCALE: 12.0
+    TEXT_QUERY_COND: True
+    TEXT_QUERY_COND_SCALE: 0.20
 
 SOLVER:
   MAX_EPOCH: 12

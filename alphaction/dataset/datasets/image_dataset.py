@@ -242,10 +242,15 @@ class ImageDataset(torch.utils.data.Dataset):
         """
         prompts = []
         for class_name in self.class_names:
-            # Generate common prompt formats
-            prompt = f"a photo of {class_name}"
+            prompt = self._format_prompt(class_name)
             prompts.append(prompt)
         return prompts
+
+    def _format_prompt(self, class_name):
+        template = str(getattr(self.cfg.DATA.TEXT, "PROMPT_TEMPLATE", "a photo of {}")).strip()
+        if "{}" in template:
+            return template.format(class_name)
+        return f"{template} {class_name}".strip()
 
     def get_sample_info(self, index):
         sample = self.samples[index]
@@ -1406,7 +1411,7 @@ class ImageDataset(torch.utils.data.Dataset):
                     break
 
             if matched_key is None:
-                caption = class_name
+                caption = self._format_prompt(class_name)
             else:
                 consumed_keys.add(matched_key)
                 caption = source_entries[matched_key]["caption"]

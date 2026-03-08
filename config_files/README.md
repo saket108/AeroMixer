@@ -1,12 +1,15 @@
 # Config Layout
 
-## Active configs (use these only)
-- `base.yaml`: shared baseline reference
-- `presets/lite.yaml`: fast sanity/Colab baseline
-- `presets/full.yaml`: stronger training recipe
-- `presets/prod.yaml`: stable detector-only production profile
+## User-facing presets
+- `presets/lite.yaml`: `AeroLite-Det-T` for quick smoke tests
+- `presets/full.yaml`: `AeroLite-Det-S` as the main balanced training preset
+- `presets/prod.yaml`: `AeroLite-Det-B` for the heavier production-oriented recipe
+
+## Archived configs
+- `archive/*`: historical notes only; active runs should use `presets/*`
 
 ## Policy
-- Keep day-to-day runs on one of the three preset configs above.
-- Prefer CLI overrides from `scripts/pipeline.py` over creating many new YAML variants.
-- Treat extra YAML variants as experiment snapshots and move them to `config_files/archive/`.
+- Day-to-day runs should start from `presets/full.yaml` unless you explicitly want a lighter or more conservative recipe.
+- Prefer CLI overrides from `scripts/pipeline.py` over creating many YAML variants.
+- Do not commit machine-specific absolute dataset paths.
+- Move one-off experiment configs to `config_files/archive/`.

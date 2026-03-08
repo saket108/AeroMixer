@@ -3,6 +3,7 @@ import logging
 import numpy as np
 import torch
 import torch.utils.data
+from alphaction.config import uses_text_branch
 from alphaction.utils.comm import get_world_size
 from . import datasets as D
 from .collate_batch import BatchCollator
@@ -192,7 +193,7 @@ def make_data_loader(cfg, is_train=True, is_distributed=False, start_iter=0):
 
         data_loaders.append(data_loader)
 
-        if cfg.DATA.OPEN_VOCABULARY:
+        if uses_text_branch(cfg):
             vocabularies.append(dataset.text_input)
         else:
             vocabularies.append(None)

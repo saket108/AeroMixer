@@ -23,8 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-import build_tiled_yolo_dataset as tiler
-import train_any_dataset as ds
+from internal import build_tiled_yolo_dataset as tiler
+from internal import train_any_dataset as ds
 import validate_dataset as vd
 
 
@@ -488,7 +488,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--data", required=True, help="Dataset path: zip/folder/data.yaml/json"
     )
-    p.add_argument("--preset", choices=["lite", "full", "prod"], default="lite")
+    p.add_argument("--preset", choices=["lite", "full", "prod"], default="full")
     p.add_argument(
         "--config-file", default=None, help="Optional override for preset config."
     )

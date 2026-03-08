@@ -1,29 +1,32 @@
 # AeroMixer
 
-AeroMixer is currently an image-first detection training stack built around an STM-style query decoder.
+AeroMixer is an image-only detection stack built around a lightweight query detector with optional image+text class prompting.
 
-This README documents what the code does today.
+This README documents the active production path, not the older video research history.
 
 ## Current Status
 
 - The active data path is image-only (`alphaction/dataset/build.py` always builds `ImageDataset`).
-- Training and evaluation are end-to-end: dataset -> model -> losses -> optimizer/scheduler -> checkpoint -> inference -> mAP.
-- Open-vocabulary plumbing exists (vocab loading, text encoder integration hooks), but the active STM path is detection-only (class + box losses).
-- Primary runtime entrypoints are image-only (`train_net.py`, `test_net.py`, `demo_image.py`, `trainval.sh`).
+- The supported public model family is `AeroLite-Det-T`, `AeroLite-Det-S`, and `AeroLite-Det-B`.
+- The active runtime supports one detector entrypoint: `AeroLiteDetector` (legacy alias: `STMDetector`).
+- Text prompts are active in the main configs through lightweight class-prototype fusion, not only as offline metadata.
+- Primary runtime entrypoints are `scripts/pipeline.py`, `scripts/validate_dataset.py`, `train_net.py`, `test_net.py`, and `demo_image.py`.
 
 ## Model Overview
 
-Default detector (`MODEL.DET: STMDetector`) is:
+Supported detector (`MODEL.DET: AeroLiteDetector`) is:
 
 1. Backbone (`alphaction/modeling/backbone/backbone.py`)
 2. STM decoder head (`alphaction/modeling/stm_decoder/stm_decoder.py`)
 3. DETR-style Hungarian assignment + set losses
 
+In practical terms, `AeroLite-Det` is a lightweight ResNet-like CNN backbone with an FPN-style pyramid, a query-based decoder head, and a native LiteText prompt encoder for image+text detection.
+
 ### High-level Forward (Image Mode)
 
 1. Input image batch is preprocessed and padded to `[B, C, H, W]`.
 2. Backbone outputs patch features (and optionally class/global features).
-3. `STMDetector` projects image features into `HIDDEN_DIM` using a lightweight conv projection block.
+3. `AeroLiteDetector` projects image features into `HIDDEN_DIM` using a lightweight conv projection block.
 4. Feature levels are built as:
    - real `C3/C4/C5 -> FPN (P3/P4/P5/P6)` when backbone exposes intermediate maps
    - resized single-map pyramid fallback for backbones without intermediate maps
@@ -37,18 +40,21 @@ Default detector (`MODEL.DET: STMDetector`) is:
 
 ### 1) Backbone Options
 
-Registered backbones include:
+Supported backbones in the active runtime:
 
-- `ImageResNet-50`, `ImageResNet-101`, `ImageResNet-152`
-- `ImageResNet-Lite`
-- `ImageViT-B`, `ImageViT-L`, `ImageViT-H`
-- CLIP-family wrappers: `ViT-B/16`, `ViT-B/32`, `ViT-L/14`
-- CLIP-ViP: `ViP-B/16`, `ViP-B/32`
-- ViCLIP: `ViCLIP-L/14`
+- `AeroLite-Det-T`
+- `AeroLite-Det-S`
+- `AeroLite-Det-B`
 
-The provided image config (`config_files/images/aeromixer_images.yaml`) uses `ViT-B/16` (better spatial detail than `ViT-B/32` for fine defects).
+The default presets map directly to that family:
 
-### 2) Detector (`STMDetector`)
+- `lite`: `AeroLite-Det-T`
+- `full`: `AeroLite-Det-S`
+- `prod`: `AeroLite-Det-B`
+
+This matches the way modern detector repos present one architecture family with a few scale variants instead of a flat list of unrelated backbones. Older research backbones are not part of the supported runtime surface.
+
+### 2) Detector (`AeroLiteDetector`)
 
 Core behavior in image mode:
 
@@ -65,7 +71,7 @@ Core behavior in image mode:
   - each level is reshaped to `[B, C, 1, H, W]` for decoder compatibility
 - Optional text features resolved from:
   - `extras["text_features"]`, or
-  - backbone `forward_text()` when `DATA.OPEN_VOCABULARY=True`
+  - backbone `forward_text()` when `DATA.MULTIMODAL=True` or `DATA.OPEN_VOCABULARY=True`
 
 ### 3) STM Decoder (`STMDecoder`)
 
@@ -83,6 +89,7 @@ Decoder internals:
 - Query init:
   - learned spatial query embedding (`num_queries x hidden_dim`)
   - temporal query embedding only for non-image branches
+  - optional lightweight text-conditioned query bias in the active multimodal presets
 - Box init:
   - uses `extras["prior_boxes"]` if provided
   - else CAM-based init if `extras["cams"]` exists
@@ -93,6 +100,7 @@ Decoder internals:
   - self-attention with IoF-based attention bias
   - adaptive sampling/mixing (via `SAMPLE4D` + `AdaptiveMixing`)
   - classification head (`OBJECT_CLASSES + 1` with background)
+  - optional query-to-text logit fusion against class prompt prototypes
   - regression head (`4`-dim delta in `xyzr`)
   - iterative box refinement (`refine_xyzr`)
   - optional attention telemetry for stage-level quality analysis
@@ -268,7 +276,7 @@ cd /content/AeroMixer && AEROMIXER_COLAB_PROFILE=minimal bash scripts/colab_boot
 ```
 
 Notes:
-- CLIP is vendored in-repo (`clip/`), so no `pip install git+...CLIP` build step is required.
+- No external CLIP bootstrap step is required for the active AeroLite runtime.
 - `AEROMIXER_COLAB_PROFILE=minimal` is the recommended stable profile.
 - Full walkthrough: `docs/COLAB_QUICKSTART.md`.
 
@@ -342,33 +350,21 @@ Direct low-level train command (advanced/debug):
 python train_net.py --config-file config_files/presets/full.yaml
 ```
 
-Dataset-aware train-only command (without eval):
-
-```bash
-python scripts/train_any_dataset.py \
-  --data /content/my_dataset.zip \
-  --config-file config_files/presets/full.yaml \
-  --output-dir output/colab_any \
-  --epochs 3 \
-  --batch-size 4 \
-  --num-workers 2 \
-  --split-ratio 80,10,10 \
-  --skip-val-in-train
-```
-
 Notes:
 - `--data` supports zip, folder, `data.yaml`, or `.json`.
 - Flat YOLO folders (`images/` + `labels/`) need `--split-ratio`.
-- Script auto-detects annotation format and sets class-count overrides for STM.
+- `scripts/pipeline.py` handles dataset preparation, class-count overrides, train, and eval in one public workflow.
 
 Project script policy:
-- Active: `scripts/pipeline.py`, `scripts/train_any_dataset.py`, `scripts/validate_dataset.py`, `scripts/inference_pipeline.py`, `scripts/freeze_dataset_version.py`, `scripts/colab_bootstrap.sh`, `scripts/colab_oneclick_train.sh`
-- Archived research tools: `scripts/archive/*` (top-level wrappers kept for compatibility)
+- Public entrypoints: `scripts/pipeline.py`, `scripts/validate_dataset.py`, `scripts/freeze_dataset_version.py`, `scripts/run_baseline_benchmarks.py`, `scripts/release_tools.py`, `scripts/validate_docker_inference.py`, `scripts/colab_bootstrap.sh`
+- Internal helpers: `scripts/internal/*`
+- Archived research tools: `scripts/archive/*`
 
 Stable inference/eval pipeline:
 
 ```bash
-python scripts/inference_pipeline.py \
+python scripts/pipeline.py \
+  --mode eval \
   --data "C:/path/to/dataset_or_zip" \
   --preset prod \
   --output-dir output/inference_prod \
@@ -465,7 +461,7 @@ Run baseline/zero/clamp IoF tau experiments on a fixed 5% subset:
 
 ```bash
 python scripts/archive/run_iof_tau_ablation.py \
-  --config-file config_files/images/aeromixer_images.yaml \
+  --config-file config_files/presets/full.yaml \
   --subset-ratio 0.05 \
   --epochs 20 \
   --seed 2 \
@@ -490,7 +486,7 @@ Run AeroMixer / YOLO / DETR commands and append one comparable benchmark format:
 python scripts/run_baseline_benchmarks.py \
   --dataset merged_dataset_v1 \
   --preset benchmark \
-  --aeromixer-cmd "python train_net.py --config-file config_files/images/aeromixer_images.yaml --skip-final-test" \
+  --aeromixer-cmd "python train_net.py --config-file config_files/presets/full.yaml --skip-final-test" \
   --aeromixer-metrics "output/aircraft_run/inference/aircraft/result_image.log" \
   --yolo-cmd "python path/to/yolo_train.py ..." \
   --yolo-metrics "runs/detect/train/results.csv" \
@@ -505,7 +501,6 @@ Output:
 ## License
 
 See `LICENSE`.
-Vendored `clip/` module is from OpenAI CLIP (MIT), see `third_party_openai_clip_LICENSE.txt`.
 
 ## Release & Benchmark Tracking
 

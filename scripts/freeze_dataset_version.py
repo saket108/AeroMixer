@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import train_any_dataset as ds
+from internal import train_any_dataset as ds
 import validate_dataset as vd
 
 

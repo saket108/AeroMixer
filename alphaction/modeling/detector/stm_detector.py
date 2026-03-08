@@ -1,13 +1,17 @@
-"""
-STM Detector for image multimodal models.
-"""
+"""AeroLite detector for image multimodal models."""
+
+import logging
 
 from torch import nn
 import torch
 import torch.nn.functional as F
 
+from alphaction.config import is_image_mode, uses_text_branch
 from ..backbone import build_backbone
 from ..stm_decoder.stm_decoder import build_stm_decoder
+
+
+logger = logging.getLogger(__name__)
 
 class LayerNorm(nn.Module):
     """LayerNorm that supports channels_first tensors (N,C,...) and channels_last."""
@@ -33,7 +37,10 @@ class LayerNorm(nn.Module):
 
 
 
-class STMDetector(nn.Module):
+SUPPORTED_DETECTORS = ("AeroLiteDetector", "STMDetector")
+
+
+class AeroLiteDetector(nn.Module):
 
     def __init__(self, cfg):
         super().__init__()
@@ -41,8 +48,12 @@ class STMDetector(nn.Module):
         self.cfg = cfg
         self.backbone = build_backbone(cfg)
 
-        # Detect dataset mode - check both INPUT_TYPE and IMAGE_MODE.
-        self.is_image = cfg.DATA.INPUT_TYPE == "image" or getattr(cfg.DATA, "IMAGE_MODE", False)
+        self.is_image = is_image_mode(cfg)
+        if not self.is_image:
+            raise RuntimeError(
+                "AeroLiteDetector supports image mode only. "
+                "Set DATA.INPUT_TYPE='image' and DATA.IMAGE_MODE=True."
+            )
 
         # Build STM decoder with image_mode parameter.
         self.stm_head = build_stm_decoder(cfg, image_mode=self.is_image)
@@ -90,7 +101,10 @@ class STMDetector(nn.Module):
                     nn.ReLU(inplace=True),
                 )
 
-        print(">>>> STMDetector running in", "IMAGE MODE" if self.is_image else "VIDEO MODE")
+        logger.info(
+            "AeroLiteDetector initialized in image-only detection mode (backbone=%s).",
+            cfg.MODEL.BACKBONE.CONV_BODY,
+        )
 
     def _merge_extras(self, extras, labels=None):
         if isinstance(extras, dict):
@@ -186,7 +200,7 @@ class STMDetector(nn.Module):
         if text_features is not None:
             return text_features
 
-        if self.cfg.DATA.OPEN_VOCABULARY:
+        if uses_text_branch(self.cfg):
             return self._encode_backbone_text(device=device, dtype=dtype)
 
         return None
@@ -255,9 +269,6 @@ class STMDetector(nn.Module):
 
         return [p3.unsqueeze(2), p4.unsqueeze(2), p5.unsqueeze(2), p6.unsqueeze(2)]
 
-    # --------------------------------------------------------
-    # IMAGE FORWARD
-    # --------------------------------------------------------
     def forward_image(self, primary_inputs, whwh, boxes=None, labels=None, extras=None):
         extras = self._merge_extras(extras, labels=labels)
 
@@ -289,7 +300,7 @@ class STMDetector(nn.Module):
         else:
             feats = self._pick_feature_tensor(patch_feat)
             if feats is None:
-                raise RuntimeError("STMDetector could not extract a tensor feature map from backbone output.")
+                raise RuntimeError("AeroLiteDetector could not extract a tensor feature map from backbone output.")
             feats = self._to_image_feature(feats)
             feats = self.img_proj(feats)
             mapped_features = self._build_image_pyramid(feats)
@@ -310,19 +321,23 @@ class STMDetector(nn.Module):
             extras=extras,
         )
 
-    # --------------------------------------------------------
-    # UNIVERSAL FORWARD
-    # --------------------------------------------------------
-    def forward(self, primary_inputs, secondary_inputs, whwh,
+    def forward(self, primary_inputs, secondary_inputs=None, whwh=None,
                 boxes=None, labels=None, extras=None, part_forward=-1):
-
-        if not self.is_image:
-            raise RuntimeError(
-                "STMDetector currently supports image mode only. "
-                "Set DATA.INPUT_TYPE='image'."
-            )
+        if whwh is None:
+            raise ValueError("AeroLiteDetector.forward requires `whwh` image sizes.")
         return self.forward_image(primary_inputs, whwh, boxes, labels, extras)
 
 
+STMDetector = AeroLiteDetector
+
+
 def build_detection_model(cfg):
-    return STMDetector(cfg)
+    det_name = str(getattr(cfg.MODEL, "DET", "AeroLiteDetector")).strip()
+    if det_name not in SUPPORTED_DETECTORS:
+        supported = ", ".join(SUPPORTED_DETECTORS)
+        raise ValueError(f"Unsupported detector '{det_name}'. Supported detectors: {supported}.")
+    return AeroLiteDetector(cfg)
+
+
+def build_aerolite_detector(cfg):
+    return AeroLiteDetector(cfg)

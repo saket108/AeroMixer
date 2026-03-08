@@ -59,16 +59,12 @@ def _check_required_files(root: Path) -> CheckItem:
         "requirements_lock_colab.txt",
         "requirements_lock_colab_minimal.txt",
         "scripts/pipeline.py",
-        "scripts/inference_pipeline.py",
+        "scripts/internal/train_any_dataset.py",
+        "scripts/internal/build_tiled_yolo_dataset.py",
         "scripts/colab_bootstrap.sh",
-        "config_files/base.yaml",
         "config_files/presets/lite.yaml",
         "config_files/presets/full.yaml",
         "config_files/presets/prod.yaml",
-        "clip/clip.py",
-        "clip/model.py",
-        "clip/simple_tokenizer.py",
-        "clip/bpe_simple_vocab_16e6.txt.gz",
         "Dockerfile",
     ]
     missing = [p for p in required if not (root / p).exists()]

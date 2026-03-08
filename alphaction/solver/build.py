@@ -1,8 +1,11 @@
+import logging
 import torch
 from torch import nn
 from .lr_scheduler import WarmupMultiStepLR, HalfPeriodCosStepLR
 import json
 
+
+logger = logging.getLogger(__name__)
 
 def get_num_layer_for_vit(var_name, num_max_layer):
     if var_name in ("cls_token", "mask_token", "pos_embed"):
@@ -119,7 +122,7 @@ def make_optimizer(cfg, model):
             assigner = None
 
         if assigner is not None:
-            print("Assigned values = %s" % str(assigner.values))
+            logger.info("ViT layer decay values: %s", assigner.values)
 
         skip_weight_decay_list = set(cfg.ViT.NO_WEIGHT_DECAY)
         # print("Skip weight decay list: ", skip_weight_decay_list)

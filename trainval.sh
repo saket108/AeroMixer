@@ -1,7 +1,7 @@
 #!/bin/bash
 
 PHASE=$1  # train, eval (image-only)
-CFG_FILE="config_files/images/aeromixer_images.yaml"
+CFG_FILE="config_files/presets/full.yaml"
 TEST_WEIGHT=${2:-'checkpoints/model_final.pth'}
 
 if [ ! -f "$CFG_FILE" ]; then

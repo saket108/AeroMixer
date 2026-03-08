@@ -5,7 +5,8 @@ import torch
 from alphaction.config import cfg
 from alphaction.dataset import make_data_loader
 from alphaction.engine.inference import inference
-from alphaction.modeling.detector import build_detection_model, build_naive_baseline
+from alphaction.modeling.detector import build_detection_model
+from alphaction.modeling.runtime import configure_text_encoder
 from alphaction.utils.checkpoint import ActionCheckpointer
 from torch.utils.collect_env import get_pretty_env_info
 from alphaction.utils.comm import synchronize, get_rank
@@ -85,18 +86,18 @@ def main():
         logger.info("Startup logs condensed. Use --verbose-startup for full env/config dump.")
 
     # Build the model.
-    if cfg.MODEL.DET == 'STMDetector':
-        model = build_detection_model(cfg)
-    elif cfg.MODEL.DET == 'NaiveBaseline':
-        model = build_naive_baseline(cfg)
+    if cfg.MODEL.DET not in ('AeroLiteDetector', 'STMDetector'):
+        raise ValueError(
+            f"Unsupported detector '{cfg.MODEL.DET}'. The active runtime supports 'AeroLiteDetector' (legacy alias: 'STMDetector')."
+        )
+    model = build_detection_model(cfg)
     model.to(device)
 
-    if cfg.MODEL.DET != 'NaiveBaseline':
-        # load weight.
-        output_dir = cfg.OUTPUT_DIR
-        checkpointer = ActionCheckpointer(cfg, model, save_dir=output_dir)
-        ckpt_file = os.path.join(output_dir, cfg.MODEL.WEIGHT) if cfg.MODEL.WEIGHT else None
-        checkpointer.load(ckpt_file)
+    # load weight.
+    output_dir = cfg.OUTPUT_DIR
+    checkpointer = ActionCheckpointer(cfg, model, save_dir=output_dir)
+    ckpt_file = os.path.join(output_dir, cfg.MODEL.WEIGHT) if cfg.MODEL.WEIGHT else None
+    checkpointer.load(ckpt_file)
 
     output_folders = [None] * len(cfg.DATA.DATASETS)
     dataset_names = cfg.DATA.DATASETS
@@ -111,8 +112,8 @@ def main():
     data_loaders_test, vocabularies_test, _ = make_data_loader(cfg, is_train=False, is_distributed=distributed)
     for i, (output_folder, dataset_name, data_loader_test) in enumerate(zip(output_folders, dataset_names, data_loaders_test)):
         # set open vocabulary
-        if len(vocabularies_test) > 0 and vocabularies_test[i] is not None:
-            model.backbone.text_encoder.set_vocabulary(vocabularies_test[i])
+        if len(vocabularies_test) > 0:
+            configure_text_encoder(model, vocabularies_test[i])
         
         inference(
             model,

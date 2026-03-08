@@ -3,7 +3,7 @@ import unittest
 import torch
 
 from alphaction.config import cfg as default_cfg
-from alphaction.modeling.detector.stm_detector import LayerNorm, STMDetector
+from alphaction.modeling.detector.stm_detector import AeroLiteDetector, LayerNorm
 from alphaction.modeling.stm_decoder.stm_decoder import STMDecoder
 from alphaction.modeling.stm_decoder.util.head_utils import decode_box
 
@@ -16,16 +16,16 @@ class TestModelForwardSmoke(unittest.TestCase):
         self.assertEqual(tuple(y.shape), tuple(x.shape))
         self.assertTrue(torch.isfinite(y).all().item())
 
-    def test_resnet_lite_backbone_fpn_shapes(self):
+    def test_aerolite_backbone_fpn_shapes(self):
         cfg = default_cfg.clone()
         cfg.defrost()
         cfg.DATA.INPUT_TYPE = "image"
         cfg.DATA.IMAGE_MODE = True
-        cfg.MODEL.BACKBONE.CONV_BODY = "ImageResNet-Lite"
+        cfg.MODEL.BACKBONE.CONV_BODY = "AeroLite-Det-S"
         cfg.MODEL.BACKBONE.PATHWAYS = 1
         cfg.freeze()
 
-        model = STMDetector(cfg)
+        model = AeroLiteDetector(cfg)
         self.assertTrue(model.use_backbone_fpn)
 
         x = torch.randn(2, 3, 224, 224)

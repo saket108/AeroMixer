@@ -1,2 +1,13 @@
-from .stm_detector import build_detection_model
-from .naive_baseline import build_naive_baseline
+from .stm_detector import (
+    AeroLiteDetector,
+    STMDetector,
+    build_aerolite_detector,
+    build_detection_model,
+)
+
+__all__ = [
+    "AeroLiteDetector",
+    "STMDetector",
+    "build_aerolite_detector",
+    "build_detection_model",
+]

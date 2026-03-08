@@ -9,6 +9,7 @@ DATA:
   STD: [0.26862954, 0.26130258, 0.27577711]
   DATASETS: ['aircraft']
   OPEN_VOCABULARY: False
+  MULTIMODAL: True
   # Lite scales for faster CPU/low-memory training.
   TRAIN_MIN_SCALES: [256]
   TEST_MIN_SCALES: [256]
@@ -16,11 +17,22 @@ DATA:
 MODEL:
   MULTI_LABEL_ACTION: False
   PRE_EXTRACT_FEAT: False
+  TEXT_ENCODER: "LITE_TEXT"
 
   BACKBONE:
-    # Lighter than ViT-B/16 for quicker experimentation.
-    CONV_BODY: "ViT-B/32"
+    CONV_BODY: "AeroLite-Det-T"
     PATHWAYS: 1
+
+  LITE_TEXT:
+    EMBED_DIM: 256
+    MAX_TOKENS: 12
+    MAX_VARIANTS: 4
+    CONTEXT_TOKENS: 4
+    VOCAB_SIZE: 4096
+    NUM_LAYERS: 1
+    NUM_HEADS: 4
+    FFN_DIM: 384
+    DROPOUT: 0.0
 
   STM:
     QUERY_INIT_MODE: "learnable_anchors"
@@ -45,6 +57,12 @@ MODEL:
     NUM_CLS: 6
     PREDICT_SEVERITY: False
     SEVERITY_WEIGHT: 1.0
+    SCORE_THRESHOLD: 0.05
+    TEXT_SCORE_FUSION: True
+    TEXT_SCORE_FUSION_ALPHA: 0.30
+    TEXT_LOGIT_SCALE: 10.0
+    TEXT_QUERY_COND: True
+    TEXT_QUERY_COND_SCALE: 0.15
 
 SOLVER:
   MAX_EPOCH: 1

@@ -338,7 +338,7 @@ def _write_summary(output_root: str, rows: List[Dict]) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Run IoF tau ablation experiments.")
-    parser.add_argument("--config-file", default="config_files/images/aeromixer_images.yaml", type=str)
+    parser.add_argument("--config-file", default="config_files/presets/full.yaml", type=str)
     parser.add_argument("--output-root", default="outputs/iof_tau_ablation", type=str)
     parser.add_argument("--subset-ratio", default=0.05, type=float)
     parser.add_argument("--epochs", default=20, type=int)

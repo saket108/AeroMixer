@@ -1,8 +1,8 @@
 # Active Presets
 
-These are the only active day-to-day configs:
-- `lite.yaml`
-- `full.yaml`
-- `prod.yaml`
+These are the only preset files meant for normal train/eval use:
+- `lite.yaml` -> `AeroLite-Det-T`
+- `full.yaml` -> `AeroLite-Det-S`
+- `prod.yaml` -> `AeroLite-Det-B`
 
-Pipeline defaults resolve presets from this folder.
+`scripts/pipeline.py` defaults to `full`.
