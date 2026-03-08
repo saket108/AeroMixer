@@ -11,5 +11,5 @@
 ## Policy
 - Day-to-day runs should start from `presets/full.yaml` unless you explicitly want a lighter or more conservative recipe.
 - Prefer CLI overrides from `scripts/pipeline.py` over creating many YAML variants.
-- Do not commit machine-specific absolute dataset paths.
+- Active presets are pinned to `C:/Users/tsake/OneDrive/Desktop/Aero_dataset` as the canonical dataset root.
 - Move one-off experiment configs to `config_files/archive/`.

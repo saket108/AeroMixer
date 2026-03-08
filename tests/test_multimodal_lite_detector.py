@@ -3,7 +3,7 @@ import unittest
 import torch
 
 from alphaction.config import cfg as default_cfg
-from alphaction.modeling.detector.stm_detector import AeroLiteDetector
+from alphaction.modeling.detector.stm_detector import AeroLiteDetector, ScaleTextRouter
 from alphaction.modeling.stm_decoder.stm_decoder import AMStage, STMDecoder
 
 
@@ -120,6 +120,99 @@ class TestMultimodalLiteDetector(unittest.TestCase):
         self.assertEqual(dims["AeroLite-Det-B"], 512)
         self.assertLess(dims["AeroLite-Det-T"], dims["AeroLite-Det-S"])
         self.assertLess(dims["AeroLite-Det-S"], dims["AeroLite-Det-B"])
+
+    def test_scale_text_router_changes_level_weights_for_different_text(self):
+        torch.manual_seed(0)
+        router = ScaleTextRouter(
+            feature_dim=16,
+            text_dim=8,
+            num_levels=4,
+            hidden_dim=12,
+            gain=0.50,
+        )
+        features = [
+            torch.randn(2, 16, 1, 32, 32),
+            torch.randn(2, 16, 1, 16, 16),
+            torch.randn(2, 16, 1, 8, 8),
+            torch.randn(2, 16, 1, 4, 4),
+        ]
+        text_a = torch.tensor(
+            [
+                [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            ]
+        )
+        text_b = torch.tensor(
+            [
+                [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+            ]
+        )
+
+        routed_a, summary_a = router(features, text_a)
+        routed_b, summary_b = router(features, text_b)
+
+        self.assertEqual(len(routed_a), 4)
+        self.assertEqual(tuple(summary_a["level_weights"].shape), (2, 4))
+        self.assertEqual(tuple(summary_a["object_scale"].shape), (2,))
+        self.assertFalse(
+            torch.allclose(summary_a["level_weights"], summary_b["level_weights"])
+        )
+        self.assertFalse(torch.allclose(routed_a[0], routed_b[0]))
+
+    def test_prompt_adaptive_queries_change_routed_prefix_only(self):
+        cfg = self._build_cfg()
+        cfg.defrost()
+        cfg.MODEL.STM.NUM_QUERIES = 10
+        cfg.MODEL.STM.PROMPT_ADAPTIVE_QUERIES = True
+        cfg.MODEL.STM.PROMPT_ADAPTIVE_QUERY_RATIO = 0.4
+        cfg.MODEL.STM.PROMPT_ADAPTIVE_QUERY_SCALE = 0.35
+        cfg.freeze()
+        decoder = STMDecoder(cfg, image_mode=True)
+
+        whwh = torch.tensor([[640.0, 640.0, 640.0, 640.0]], dtype=torch.float32)
+        text_context = torch.linspace(
+            0.0, 1.0, cfg.MODEL.LITE_TEXT.EMBED_DIM
+        ).unsqueeze(0)
+        routed_extras = {
+            "scale_routing": {
+                "level_weights": torch.tensor(
+                    [[0.90, 0.06, 0.03, 0.01]], dtype=torch.float32
+                ),
+                "object_scale": torch.tensor([0.70], dtype=torch.float32),
+            }
+        }
+
+        xyzr_base, query_base, _ = decoder._decode_init_queries(
+            whwh, text_context=text_context, extras={}
+        )
+        xyzr_routed, query_routed, _ = decoder._decode_init_queries(
+            whwh,
+            text_context=text_context,
+            extras=routed_extras,
+        )
+
+        adaptive_count = 4
+        self.assertFalse(
+            torch.allclose(
+                xyzr_base[:, :adaptive_count], xyzr_routed[:, :adaptive_count]
+            )
+        )
+        self.assertFalse(
+            torch.allclose(
+                query_base[:, :adaptive_count], query_routed[:, :adaptive_count]
+            )
+        )
+        self.assertTrue(
+            torch.allclose(
+                xyzr_base[:, adaptive_count:], xyzr_routed[:, adaptive_count:]
+            )
+        )
+        self.assertTrue(
+            torch.allclose(
+                query_base[:, adaptive_count:], query_routed[:, adaptive_count:]
+            )
+        )
 
 
 if __name__ == "__main__":

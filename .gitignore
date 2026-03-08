@@ -10,6 +10,7 @@ __pycache__/
 venv/
 
 # ---------------- Dataset (DO NOT PUSH IMAGES) ----------------
+data/Aero_dataset/
 data/aircraft/images/
 data/aircraft/labels/
 data/*_unzipped/

@@ -20,7 +20,7 @@ Supported detector (`MODEL.DET: AeroLiteDetector`) is:
 2. STM decoder head (`alphaction/modeling/stm_decoder/stm_decoder.py`)
 3. DETR-style Hungarian assignment + set losses
 
-In practical terms, `AeroLite-Det` is a lightweight ResNet-like CNN backbone with an FPN-style pyramid, a query-based decoder head, and a native LiteText prompt encoder for image+text detection.
+In practical terms, `AeroLite-Det` is a lightweight ResNet-like CNN backbone with an FPN-style pyramid, a prompt-conditioned scale router, a query-based decoder head, and a native LiteText prompt encoder for image+text detection.
 
 ### High-level Forward (Image Mode)
 
@@ -30,9 +30,11 @@ In practical terms, `AeroLite-Det` is a lightweight ResNet-like CNN backbone wit
 4. Feature levels are built as:
    - real `C3/C4/C5 -> FPN (P3/P4/P5/P6)` when backbone exposes intermediate maps
    - resized single-map pyramid fallback for backbones without intermediate maps
+   - optional `ScaleTextRouter` reweights the pyramid using prompt context before decoding
 5. STM decoder runs multi-stage query refinement:
    - query attention + IoF bias
    - adaptive sampling/mixing
+   - prompt-adaptive query priors for the routed query subset
    - class logits + box delta prediction
 6. Training returns weighted losses; eval returns normalized boxes + scores + labels.
 
@@ -90,12 +92,14 @@ Decoder internals:
   - learned spatial query embedding (`num_queries x hidden_dim`)
   - temporal query embedding only for non-image branches
   - optional lightweight text-conditioned query bias in the active multimodal presets
+  - optional prompt-adaptive routing that scales the first query block by text-driven multiscale context
 - Box init:
   - uses `extras["prior_boxes"]` if provided
   - else CAM-based init if `extras["cams"]` exists
   - else learnable anchor-like priors on a query grid (default)
   - optional full-image fallback via `MODEL.STM.QUERY_INIT_MODE: "full_image"`
   - optional small-object bias via `MODEL.STM.QUERY_INIT_SMALL_OBJECT_BIAS`
+  - optional prompt-adaptive prior scaling driven by routed FPN level weights
 - Stage update loop:
   - self-attention with IoF-based attention bias
   - adaptive sampling/mixing (via `SAMPLE4D` + `AdaptiveMixing`)
@@ -240,9 +244,9 @@ Utility script:
 
 ```bash
 python preprocess/build_open_vocab.py \
-  --annotations data/aircraft/train.txt data/aircraft/test.txt \
-  --out-closed data/aircraft/annotations/vocab_closed.json \
-  --out-open data/aircraft/annotations/vocab_open.json \
+  --annotations "C:/Users/tsake/OneDrive/Desktop/Aero_dataset/train.txt" "C:/Users/tsake/OneDrive/Desktop/Aero_dataset/test.txt" \
+  --out-closed "C:/Users/tsake/OneDrive/Desktop/Aero_dataset/annotations/vocab_closed.json" \
+  --out-open "C:/Users/tsake/OneDrive/Desktop/Aero_dataset/annotations/vocab_open.json" \
   --closed-ratio 0.8 \
   --prompt-template "a photo of {label}"
 ```
@@ -285,9 +289,9 @@ Then run full pipeline (prepare + train + eval) from uploaded dataset:
 ```bash
 python scripts/pipeline.py \
   --mode run \
-  --data /content/model_dataset_zipped.zip \
+  --data "/content/drive/MyDrive/Aero_dataset.zip" \
   --preset prod \
-  --output-dir output/colab_model_dataset \
+  --output-dir output/colab_aero_dataset \
   --epochs 3 \
   --batch-size 4 \
   --num-workers 2 \
@@ -300,9 +304,9 @@ Professional local workflow (single command):
 ```bash
 python scripts/pipeline.py \
   --mode run \
-  --data "C:/path/to/dataset_or_zip" \
+  --data "C:/Users/tsake/OneDrive/Desktop/Aero_dataset" \
   --preset prod \
-  --output-dir output/my_run \
+  --output-dir output/aero_dataset_run \
   --epochs 30 \
   --batch-size 4 \
   --num-workers 2
@@ -322,9 +326,9 @@ Small-object tiling (train + eval in one run):
 ```bash
 python scripts/pipeline.py \
   --mode run \
-  --data "C:/path/to/dataset_or_zip" \
+  --data "C:/Users/tsake/OneDrive/Desktop/Aero_dataset" \
   --preset prod \
-  --output-dir output/my_run_tiled \
+  --output-dir output/aero_dataset_run_tiled \
   --epochs 30 \
   --batch-size 4 \
   --tile-size 640 \
@@ -365,9 +369,9 @@ Stable inference/eval pipeline:
 ```bash
 python scripts/pipeline.py \
   --mode eval \
-  --data "C:/path/to/dataset_or_zip" \
+  --data "C:/Users/tsake/OneDrive/Desktop/Aero_dataset" \
   --preset prod \
-  --output-dir output/inference_prod \
+  --output-dir output/aero_dataset_inference \
   --model-weight checkpoints/model_final.pth
 ```
 
@@ -375,7 +379,7 @@ Dataset version freeze (for reproducibility records):
 
 ```bash
 python scripts/freeze_dataset_version.py \
-  --data "C:/path/to/dataset_or_zip" \
+  --data "C:/Users/tsake/OneDrive/Desktop/Aero_dataset" \
   --out output/dataset_version.json
 ```
 
@@ -400,9 +404,9 @@ Integrated threshold tuning after eval:
 ```bash
 python scripts/pipeline.py \
   --mode eval \
-  --data "C:/path/to/dataset_or_zip" \
+  --data "C:/Users/tsake/OneDrive/Desktop/Aero_dataset" \
   --preset prod \
-  --output-dir output/inference_prod \
+  --output-dir output/aero_dataset_inference \
   --model-weight checkpoints/model_final.pth \
   --tune-thresholds \
   --threshold-grid 0.0,0.05,0.1,0.2,0.3
@@ -484,10 +488,10 @@ Run AeroMixer / YOLO / DETR commands and append one comparable benchmark format:
 
 ```bash
 python scripts/run_baseline_benchmarks.py \
-  --dataset merged_dataset_v1 \
+  --dataset aero_dataset \
   --preset benchmark \
   --aeromixer-cmd "python train_net.py --config-file config_files/presets/full.yaml --skip-final-test" \
-  --aeromixer-metrics "output/aircraft_run/inference/aircraft/result_image.log" \
+  --aeromixer-metrics "output/aero_dataset_run/inference/aero_dataset/result_image.log" \
   --yolo-cmd "python path/to/yolo_train.py ..." \
   --yolo-metrics "runs/detect/train/results.csv" \
   --detr-cmd "python path/to/detr_train.py ..." \
@@ -535,10 +539,10 @@ docker run --rm -it \
   -v /host/datasets:/data \
   -v /host/runs:/work/output \
   aeromixer:latest \
-  --data /data/aircraft_dataset \
+  --data /data/Aero_dataset \
   --preset prod \
-  --output-dir /work/output/infer_run \
-  --model-weight /work/output/train_run/checkpoints/model_final.pth
+  --output-dir /work/output/aero_dataset_infer_run \
+  --model-weight /work/output/aero_dataset_train_run/checkpoints/model_final.pth
 ```
 
 See `docs/INFERENCE_CONTRACT.md` for full details.

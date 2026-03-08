@@ -1,6 +1,6 @@
 DATA:
   INPUT_TYPE: "image"
-  PATH_TO_DATA_DIR: "data/aircraft"
+  PATH_TO_DATA_DIR: "C:/Users/tsake/OneDrive/Desktop/Aero_dataset"
   FRAME_DIR: ""
   # Use auto so loader can pick YOLO now; switch to custom_json once split JSON files are placed under
   # <PATH_TO_DATA_DIR>/json_splits or sibling json_splits.
@@ -9,7 +9,7 @@ DATA:
   SAMPLING_RATE: 1
   MEAN: [0.48145466, 0.4578275, 0.40821073]
   STD: [0.26862954, 0.26130258, 0.27577711]
-  DATASETS: ['aircraft']
+  DATASETS: ['aero_dataset']
   OPEN_VOCABULARY: False
   MULTIMODAL: True
   # Keep more spatial detail for small defects.
@@ -71,6 +71,12 @@ MODEL:
     TEXT_LOGIT_SCALE: 12.0
     TEXT_QUERY_COND: True
     TEXT_QUERY_COND_SCALE: 0.20
+    SCALE_TEXT_ROUTING: True
+    SCALE_TEXT_ROUTING_HIDDEN: 128
+    SCALE_TEXT_ROUTING_GAIN: 0.75
+    PROMPT_ADAPTIVE_QUERIES: True
+    PROMPT_ADAPTIVE_QUERY_RATIO: 0.30
+    PROMPT_ADAPTIVE_QUERY_SCALE: 0.35
 
 SOLVER:
   MAX_EPOCH: 12
@@ -103,4 +109,4 @@ IMAGES:
   VOCAB_FILE: ""
   VOCAB_OPEN_FILE: ""
 
-OUTPUT_DIR: "output/aircraft_run"
+OUTPUT_DIR: "output/aero_dataset_run"

@@ -13,6 +13,17 @@ from ..stm_decoder.stm_decoder import build_stm_decoder
 
 logger = logging.getLogger(__name__)
 
+
+def _resolve_text_encoder_dim(cfg):
+    name = str(getattr(cfg.MODEL, "TEXT_ENCODER", "LITE_TEXT")).strip() or "LITE_TEXT"
+    encoder_cfg = getattr(cfg.MODEL, name, None)
+    if encoder_cfg is None:
+        return int(getattr(cfg.MODEL.STM, "HIDDEN_DIM", 256))
+    return int(
+        getattr(encoder_cfg, "EMBED_DIM", getattr(cfg.MODEL.STM, "HIDDEN_DIM", 256))
+    )
+
+
 class LayerNorm(nn.Module):
     """LayerNorm that supports channels_first tensors (N,C,...) and channels_last."""
 
@@ -26,7 +37,9 @@ class LayerNorm(nn.Module):
 
     def forward(self, x):
         if self.data_format == "channels_last":
-            return F.layer_norm(x, self.normalized_shape, self.weight, self.bias, self.eps)
+            return F.layer_norm(
+                x, self.normalized_shape, self.weight, self.bias, self.eps
+            )
 
         mean = x.mean(1, keepdim=True)
         var = (x - mean).pow(2).mean(1, keepdim=True)
@@ -35,6 +48,83 @@ class LayerNorm(nn.Module):
         shape = [1, -1] + [1] * (x.ndim - 2)
         return x * self.weight.view(*shape) + self.bias.view(*shape)
 
+
+class ScaleTextRouter(nn.Module):
+    """Route multiscale image features with prompt-conditioned level gates."""
+
+    def __init__(
+        self,
+        feature_dim,
+        text_dim,
+        num_levels,
+        hidden_dim=128,
+        gain=0.75,
+        temperature=1.0,
+    ):
+        super().__init__()
+        self.num_levels = int(num_levels)
+        self.gain = float(gain)
+        self.temperature = max(float(temperature), 1e-4)
+        self.feature_proj = nn.Linear(int(feature_dim), int(hidden_dim))
+        self.text_proj = nn.Linear(int(text_dim), int(hidden_dim), bias=False)
+        self.router_norm = nn.LayerNorm(int(hidden_dim))
+        self.router_logits = nn.Linear(int(hidden_dim), 1)
+        # Earlier FPN levels correspond to smaller object priors.
+        self.register_buffer(
+            "level_object_scales",
+            torch.linspace(
+                0.65, 1.55, steps=max(self.num_levels, 1), dtype=torch.float32
+            ),
+        )
+
+    def _pool_feature(self, feat):
+        if feat.dim() == 5:
+            feat = feat.mean(dim=2)
+        if feat.dim() != 4:
+            raise ValueError(
+                f"Expected routed feature map to be 4D/5D, got shape={tuple(feat.shape)}"
+            )
+        return feat.flatten(2).mean(dim=-1)
+
+    def forward(self, features, text_context):
+        if not features or text_context is None:
+            return features, None
+
+        if text_context.ndim == 1:
+            text_context = text_context.unsqueeze(0)
+
+        level_tokens = torch.stack(
+            [self._pool_feature(feat) for feat in features], dim=1
+        )
+        joint = self.feature_proj(level_tokens) + self.text_proj(
+            text_context
+        ).unsqueeze(1)
+        logits = (
+            self.router_logits(self.router_norm(torch.tanh(joint))).squeeze(-1)
+            / self.temperature
+        )
+        level_weights = torch.softmax(logits, dim=1)
+
+        centered = (
+            level_weights - (1.0 / max(level_weights.size(1), 1))
+        ) * level_weights.size(1)
+        routed_features = []
+        for idx, feat in enumerate(features):
+            gate = 1.0 + self.gain * centered[:, idx]
+            gate = gate.clamp(min=0.25, max=2.50)
+            gate = gate.view(feat.size(0), *([1] * (feat.dim() - 1)))
+            routed_features.append(feat * gate)
+
+        level_scales = self.level_object_scales[: level_weights.size(1)].to(
+            device=level_weights.device,
+            dtype=level_weights.dtype,
+        )
+        object_scale = (level_weights * level_scales.unsqueeze(0)).sum(dim=1)
+        routing_summary = {
+            "level_weights": level_weights,
+            "object_scale": object_scale,
+        }
+        return routed_features, routing_summary
 
 
 SUPPORTED_DETECTORS = ("AeroLiteDetector", "STMDetector")
@@ -79,7 +169,10 @@ class AeroLiteDetector(nn.Module):
             )
             self.use_backbone_fpn = False
             pyramid_channels = getattr(self.backbone, "pyramid_channels", None)
-            if isinstance(pyramid_channels, (list, tuple)) and len(pyramid_channels) >= 3:
+            if (
+                isinstance(pyramid_channels, (list, tuple))
+                and len(pyramid_channels) >= 3
+            ):
                 c3_ch, c4_ch, c5_ch = [int(ch) for ch in pyramid_channels[-3:]]
                 self.use_backbone_fpn = True
                 self.fpn_lateral = nn.ModuleList(
@@ -97,9 +190,29 @@ class AeroLiteDetector(nn.Module):
                     ]
                 )
                 self.fpn_extra = nn.Sequential(
-                    nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, stride=2, padding=1),
+                    nn.Conv2d(
+                        hidden_dim, hidden_dim, kernel_size=3, stride=2, padding=1
+                    ),
                     nn.ReLU(inplace=True),
                 )
+            self.scale_text_router = None
+            if uses_text_branch(cfg) and bool(
+                getattr(cfg.MODEL.STM, "SCALE_TEXT_ROUTING", False)
+            ):
+                self.scale_text_router = ScaleTextRouter(
+                    feature_dim=hidden_dim,
+                    text_dim=_resolve_text_encoder_dim(cfg),
+                    num_levels=len(self.pyramid_scales),
+                    hidden_dim=int(
+                        getattr(cfg.MODEL.STM, "SCALE_TEXT_ROUTING_HIDDEN", 128)
+                    ),
+                    gain=float(getattr(cfg.MODEL.STM, "SCALE_TEXT_ROUTING_GAIN", 0.75)),
+                    temperature=float(
+                        getattr(cfg.MODEL.STM, "SCALE_TEXT_ROUTING_TEMP", 1.0)
+                    ),
+                )
+        else:
+            self.scale_text_router = None
 
         logger.info(
             "AeroLiteDetector initialized in image-only detection mode (backbone=%s).",
@@ -196,7 +309,9 @@ class AeroLiteDetector(nn.Module):
         return self._stack_text_features(text, device=device, dtype=dtype)
 
     def _resolve_text_features(self, extras, device, dtype):
-        text_features = self._stack_text_features(extras.get("text_features"), device=device, dtype=dtype)
+        text_features = self._stack_text_features(
+            extras.get("text_features"), device=device, dtype=dtype
+        )
         if text_features is not None:
             return text_features
 
@@ -204,6 +319,54 @@ class AeroLiteDetector(nn.Module):
             return self._encode_backbone_text(device=device, dtype=dtype)
 
         return None
+
+    def _extract_class_ids(self, label, device, num_classes):
+        if label is None:
+            return None
+        label = torch.as_tensor(label, device=device)
+        if label.numel() == 0:
+            return None
+        if label.ndim == 1:
+            class_ids = label.long()
+        elif label.ndim == 2:
+            class_ids = torch.argmax(label, dim=-1).long()
+        else:
+            return None
+        class_ids = class_ids[(class_ids >= 0) & (class_ids < num_classes)]
+        return class_ids if class_ids.numel() > 0 else None
+
+    def _build_text_context(self, text_features, labels, batch_size, device, dtype):
+        if text_features is None:
+            return None
+
+        if text_features.ndim == 1:
+            text_bank = text_features.unsqueeze(0)
+        elif text_features.ndim == 2:
+            text_bank = text_features
+        elif text_features.ndim == 3:
+            text_bank = text_features.mean(dim=1)
+        else:
+            text_bank = text_features.reshape(-1, text_features.shape[-1])
+
+        text_bank = text_bank.to(device=device, dtype=dtype)
+        if text_bank.numel() == 0:
+            return None
+
+        default_context = text_bank.mean(dim=0)
+        contexts = []
+        for idx in range(batch_size):
+            class_ids = None
+            if labels is not None and idx < len(labels):
+                class_ids = self._extract_class_ids(
+                    labels[idx], device=device, num_classes=text_bank.size(0)
+                )
+
+            if class_ids is not None and class_ids.numel() > 0:
+                contexts.append(text_bank[class_ids.unique()].mean(dim=0))
+            else:
+                contexts.append(default_context)
+
+        return torch.stack(contexts, dim=0)
 
     def _pick_feature_tensor(self, features):
         if torch.is_tensor(features):
@@ -221,12 +384,16 @@ class AeroLiteDetector(nn.Module):
         if feat.dim() == 5:
             return feat.mean(dim=2)
         if feat.dim() != 4:
-            raise ValueError(f"Expected 4D/5D feature map, got shape={tuple(feat.shape)}")
+            raise ValueError(
+                f"Expected 4D/5D feature map, got shape={tuple(feat.shape)}"
+            )
         return feat
 
     def _build_image_pyramid(self, feats):
         if feats.dim() != 4:
-            raise ValueError(f"Expected 4D feature map for pyramid, got shape={tuple(feats.shape)}")
+            raise ValueError(
+                f"Expected 4D feature map for pyramid, got shape={tuple(feats.shape)}"
+            )
 
         h, w = feats.shape[-2:]
         pyramid = []
@@ -280,9 +447,16 @@ class AeroLiteDetector(nn.Module):
             backbone_out = self.backbone.forward_multiscale([primary_inputs])
             if isinstance(backbone_out, (list, tuple)) and len(backbone_out) >= 1:
                 multiscale_feats = backbone_out[0]
-                if isinstance(backbone_out, (list, tuple)) and len(backbone_out) > 1 and torch.is_tensor(backbone_out[1]):
+                if (
+                    isinstance(backbone_out, (list, tuple))
+                    and len(backbone_out) > 1
+                    and torch.is_tensor(backbone_out[1])
+                ):
                     cls_feat = backbone_out[1]
-                if isinstance(multiscale_feats, (list, tuple)) and len(multiscale_feats) > 0:
+                if (
+                    isinstance(multiscale_feats, (list, tuple))
+                    and len(multiscale_feats) > 0
+                ):
                     patch_feat = multiscale_feats[-1]
 
         if patch_feat is None:
@@ -300,13 +474,31 @@ class AeroLiteDetector(nn.Module):
         else:
             feats = self._pick_feature_tensor(patch_feat)
             if feats is None:
-                raise RuntimeError("AeroLiteDetector could not extract a tensor feature map from backbone output.")
+                raise RuntimeError(
+                    "AeroLiteDetector could not extract a tensor feature map from backbone output."
+                )
             feats = self._to_image_feature(feats)
             feats = self.img_proj(feats)
             mapped_features = self._build_image_pyramid(feats)
             feature_dtype = feats.dtype
 
-        text_features = self._resolve_text_features(extras, device=primary_inputs.device, dtype=feature_dtype)
+        text_features = self._resolve_text_features(
+            extras, device=primary_inputs.device, dtype=feature_dtype
+        )
+        if self.scale_text_router is not None and text_features is not None:
+            routing_text = self._build_text_context(
+                text_features,
+                labels=labels,
+                batch_size=primary_inputs.size(0),
+                device=primary_inputs.device,
+                dtype=feature_dtype,
+            )
+            mapped_features, routing_summary = self.scale_text_router(
+                mapped_features, routing_text
+            )
+            if routing_summary is not None:
+                extras = dict(extras)
+                extras["scale_routing"] = routing_summary
 
         return self.stm_head(
             mapped_features,
@@ -321,8 +513,16 @@ class AeroLiteDetector(nn.Module):
             extras=extras,
         )
 
-    def forward(self, primary_inputs, secondary_inputs=None, whwh=None,
-                boxes=None, labels=None, extras=None, part_forward=-1):
+    def forward(
+        self,
+        primary_inputs,
+        secondary_inputs=None,
+        whwh=None,
+        boxes=None,
+        labels=None,
+        extras=None,
+        part_forward=-1,
+    ):
         if whwh is None:
             raise ValueError("AeroLiteDetector.forward requires `whwh` image sizes.")
         return self.forward_image(primary_inputs, whwh, boxes, labels, extras)
@@ -335,7 +535,9 @@ def build_detection_model(cfg):
     det_name = str(getattr(cfg.MODEL, "DET", "AeroLiteDetector")).strip()
     if det_name not in SUPPORTED_DETECTORS:
         supported = ", ".join(SUPPORTED_DETECTORS)
-        raise ValueError(f"Unsupported detector '{det_name}'. Supported detectors: {supported}.")
+        raise ValueError(
+            f"Unsupported detector '{det_name}'. Supported detectors: {supported}."
+        )
     return AeroLiteDetector(cfg)
 
 
