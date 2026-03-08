@@ -426,10 +426,7 @@ class TestMultimodalLiteDetector(unittest.TestCase):
         tile_extras = {
             "tile_global_context": {
                 "context": torch.tensor(
-                    [
-                        [0.0, 0.5, 0.5]
-                        + [0.0] * (cfg.MODEL.LITE_TEXT.EMBED_DIM - 3)
-                    ],
+                    [[0.0, 0.5, 0.5] + [0.0] * (cfg.MODEL.LITE_TEXT.EMBED_DIM - 3)],
                     dtype=torch.float32,
                 ),
                 "blend": 0.4,
