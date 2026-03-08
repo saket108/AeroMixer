@@ -25,15 +25,7 @@ jobs:
 
          pip install torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cpu
 
-         # remove CLIP from lock file (install separately for reliability)
-         sed '/CLIP.git/d' requirements_lock.txt > reqs.txt
-         pip install -r reqs.txt
-
-         # manual CLIP install (reliable method)
-         git clone https://github.com/openai/CLIP.git
-         cd CLIP
-         python setup.py install
-         cd ..
+         pip install -r requirements_lock.txt
 
          # static quality tools
          pip install ruff==0.6.9 black==24.8.0
