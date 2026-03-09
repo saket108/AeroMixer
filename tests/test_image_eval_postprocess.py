@@ -5,6 +5,7 @@ import torch
 
 from alphaction.dataset.datasets.evaluation.images.image_eval import (
     _compute_detection_precision_recall,
+    _format_console_eval_summary,
     _prepare_for_image_ap,
 )
 
@@ -97,6 +98,23 @@ class TestImageEvalPostprocess(unittest.TestCase):
         self.assertEqual(metrics["Detection/TP@0.5IOU"], 1)
         self.assertEqual(metrics["Detection/FP@0.5IOU"], 1)
         self.assertEqual(metrics["Detection/FN@0.5IOU"], 0)
+
+    def test_console_eval_summary_uses_clean_metric_names(self):
+        summary = _format_console_eval_summary(
+            {
+                "Detection/Precision@0.5IOU": 0.5,
+                "Detection/Recall@0.5IOU": 0.25,
+                "PascalBoxes_Precision/mAP@0.5IOU": 0.1,
+                "PascalBoxes_Precision/mAP@0.5:0.95IOU": 0.04,
+                "SmallObject/AP@0.5IOU": -1.0,
+            }
+        )
+        self.assertIn("precision=0.5000", summary)
+        self.assertIn("recall=0.2500", summary)
+        self.assertIn("mAP50=0.1000", summary)
+        self.assertIn("mAP50-95=0.0400", summary)
+        self.assertIn("smallAP=n/a", summary)
+        self.assertNotIn("PascalBoxes", summary)
 
 
 if __name__ == "__main__":

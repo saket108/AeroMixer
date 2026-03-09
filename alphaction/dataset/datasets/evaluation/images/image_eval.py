@@ -675,6 +675,42 @@ def _compute_detection_precision_recall(results, targets, iou_thresh):
     }
 
 
+def _metric_float(eval_res, key, default=None):
+    value = eval_res.get(key, default)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _format_console_metric(value):
+    if value is None:
+        return "n/a"
+    value = float(value)
+    if value < 0.0:
+        return "n/a"
+    return f"{value:.4f}"
+
+
+def _format_console_eval_summary(eval_res):
+    precision = _metric_float(eval_res, "Detection/Precision@0.5IOU")
+    recall = _metric_float(eval_res, "Detection/Recall@0.5IOU")
+    map50 = _metric_float(eval_res, "PascalBoxes_Precision/mAP@0.5IOU")
+    map5095 = _metric_float(eval_res, "PascalBoxes_Precision/mAP@0.5:0.95IOU")
+    if map5095 is None:
+        map5095 = 0.0
+    small_ap = _metric_float(eval_res, "SmallObject/AP@0.5IOU")
+    return (
+        f"precision={_format_console_metric(precision)} "
+        f"recall={_format_console_metric(recall)} "
+        f"mAP50={_format_console_metric(map50)} "
+        f"mAP50-95={_format_console_metric(map5095)} "
+        f"smallAP={_format_console_metric(small_ap)}"
+    )
+
+
 def evaluate_with_text_prompts(
     predictions, dataset, text_prompts, output_folder=None, logger=None
 ):
@@ -813,7 +849,9 @@ def do_image_evaluation(
     )
 
     logger.info(
-        "Evaluation results ({}):\n{}".format(eval_metric, pformat(eval_res, indent=2))
+        "Evaluation results (%s): %s",
+        eval_metric,
+        _format_console_eval_summary(eval_res),
     )
     if output_folder:
         os.makedirs(output_folder, exist_ok=True)
@@ -884,9 +922,9 @@ def do_multimodal_image_evaluation(
     )
 
     logger.info(
-        "Multimodal evaluation results ({}):\n{}".format(
-            eval_metric, pformat(eval_res, indent=2)
-        )
+        "Multimodal evaluation results (%s): %s",
+        eval_metric,
+        _format_console_eval_summary(eval_res),
     )
     if output_folder:
         os.makedirs(output_folder, exist_ok=True)
