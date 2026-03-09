@@ -53,13 +53,13 @@ def _build_pipeline_command(args, mode):
         args.preset,
         "--output-dir",
         args.output_dir,
-        "--epochs",
-        str(args.epochs),
-        "--batch-size",
-        str(args.batch_size),
         "--num-workers",
         str(args.num_workers),
     ]
+    if hasattr(args, "epochs"):
+        command.extend(["--epochs", str(args.epochs)])
+    if hasattr(args, "batch_size"):
+        command.extend(["--batch-size", str(args.batch_size)])
 
     if hasattr(args, "tile_size") and int(args.tile_size) > 0:
         command.extend(
@@ -82,6 +82,8 @@ def _build_pipeline_command(args, mode):
         )
     if getattr(args, "skip_val_in_train", False):
         command.append("--skip-val-in-train")
+    if str(mode) == "train":
+        command.append("--skip-final-test")
     if getattr(args, "extra_opts", None):
         command.extend(["--extra-opts", *args.extra_opts])
     return command
