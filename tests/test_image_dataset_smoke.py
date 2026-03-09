@@ -160,6 +160,68 @@ class TestImageDatasetSmoke(unittest.TestCase):
             )
             self.assertEqual(extras["annotation_extras"][0]["category_name"], "dent")
 
+    def test_load_custom_json_split_layout_with_basename_file_names(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            for split_name, file_name in [
+                ("train", "image_00001.jpg"),
+                ("valid", "image_00002.jpg"),
+                ("test", "image_00003.jpg"),
+            ]:
+                image_dir = root / split_name / "images"
+                label_dir = root / split_name / "labels"
+                image_dir.mkdir(parents=True, exist_ok=True)
+                label_dir.mkdir(parents=True, exist_ok=True)
+                image = np.zeros((64, 64, 3), dtype=np.uint8)
+                self.assertTrue(cv2.imwrite(str(image_dir / file_name), image))
+
+            train_json = {
+                "images": [
+                    {
+                        "image_id": "image_00001",
+                        "file_name": "image_00001.jpg",
+                        "split": "train",
+                        "annotations": [
+                            {
+                                "annotation_id": "image_00001_0",
+                                "category_id": 0,
+                                "category_name": "crack",
+                                "bounding_box_normalized": {
+                                    "x_center": 0.5,
+                                    "y_center": 0.5,
+                                    "width": 0.25,
+                                    "height": 0.25,
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+            (root / "train.json").write_text(
+                json.dumps(train_json, indent=2), encoding="utf-8"
+            )
+
+            cfg = global_cfg.clone()
+            cfg.defrost()
+            cfg.DATA.INPUT_TYPE = "image"
+            cfg.DATA.PATH_TO_DATA_DIR = str(root)
+            cfg.DATA.FRAME_DIR = ""
+            cfg.DATA.NUM_FRAMES = 1
+            cfg.DATA.SAMPLING_RATE = 1
+            cfg.DATA.ANNOTATION_FORMAT = "custom_json"
+            cfg.DATA.OPEN_VOCABULARY = False
+            cfg.MODEL.BACKBONE.PATHWAYS = 1
+            cfg.TEST.EVAL_OPEN = False
+            cfg.freeze()
+
+            dataset = ImageDataset(cfg, split="train")
+            self.assertEqual(len(dataset), 1)
+
+            _, _, _, boxes, labels, extras, _ = dataset[0]
+            self.assertEqual(boxes.shape[0], 1)
+            self.assertEqual(labels.shape[0], 1)
+            self.assertEqual(extras["image_rel"], "train/images/image_00001.jpg")
+
     def test_infers_tile_metadata_from_tiled_yolo_filenames(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

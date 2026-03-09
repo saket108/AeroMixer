@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import time
+
 import torch
 
 from alphaction.engine.inference import inference
@@ -61,6 +62,129 @@ def _extract_validation_summary(metrics):
     return summary
 
 
+def _num_epochs(max_iter, iter_per_epoch):
+    iter_per_epoch = max(1, int(iter_per_epoch))
+    return max(1, int((int(max_iter) + iter_per_epoch - 1) // iter_per_epoch))
+
+
+def _init_epoch_summary():
+    return {
+        "num_batches": 0,
+        "loss_sums": {},
+        "instance_sum": 0,
+        "size_label": "",
+        "gpu_mem_gb": 0.0,
+    }
+
+
+def _format_image_size(primary_inputs):
+    if primary_inputs is None or primary_inputs.ndim < 4:
+        return ""
+    height = int(primary_inputs.shape[-2])
+    width = int(primary_inputs.shape[-1])
+    if height == width:
+        return str(height)
+    return f"{height}x{width}"
+
+
+def _update_epoch_summary(epoch_summary, reduced_losses, labels, primary_inputs):
+    epoch_summary["num_batches"] += 1
+    for key, value in reduced_losses.items():
+        try:
+            scalar = float(value.item() if isinstance(value, torch.Tensor) else value)
+        except Exception:
+            continue
+        epoch_summary["loss_sums"][key] = (
+            epoch_summary["loss_sums"].get(key, 0.0) + scalar
+        )
+
+    batch_instances = 0
+    for label in labels:
+        try:
+            batch_instances += int(len(label))
+        except Exception:
+            continue
+    epoch_summary["instance_sum"] += batch_instances
+
+    size_label = _format_image_size(primary_inputs)
+    if size_label:
+        epoch_summary["size_label"] = size_label
+
+    if isinstance(primary_inputs, torch.Tensor) and primary_inputs.is_cuda:
+        try:
+            gpu_mem = torch.cuda.max_memory_allocated(primary_inputs.device) / float(
+                1024**3
+            )
+            epoch_summary["gpu_mem_gb"] = max(
+                epoch_summary["gpu_mem_gb"], float(gpu_mem)
+            )
+        except Exception:
+            pass
+
+
+def _avg_epoch_loss(epoch_summary, key):
+    count = max(1, int(epoch_summary["num_batches"]))
+    return float(epoch_summary["loss_sums"].get(key, 0.0)) / float(count)
+
+
+def _format_epoch_train_summary(epoch, total_epochs, epoch_summary):
+    avg_instances = int(
+        round(
+            float(epoch_summary["instance_sum"])
+            / max(1, int(epoch_summary["num_batches"]))
+        )
+    )
+    return [
+        f"{int(epoch):>8}/{int(total_epochs):<3}",
+        f"{float(epoch_summary['gpu_mem_gb']):>9.2f}G",
+        f"{_avg_epoch_loss(epoch_summary, 'loss_bbox'):>10.4f}",
+        f"{_avg_epoch_loss(epoch_summary, 'loss_ce'):>10.4f}",
+        f"{_avg_epoch_loss(epoch_summary, 'loss_giou'):>10.4f}",
+        f"{avg_instances:>10d}",
+        f"{str(epoch_summary.get('size_label', '')):>10}",
+    ]
+
+
+def _dataset_image_instance_counts(data_loader_val):
+    dataset = getattr(data_loader_val, "dataset", None)
+    if dataset is None:
+        return 0, 0
+
+    images = 0
+    instances = 0
+
+    samples = getattr(dataset, "samples", None)
+    if isinstance(samples, list):
+        images = int(len(samples))
+        for sample in samples:
+            labels = sample.get("labels", None) if isinstance(sample, dict) else None
+            try:
+                instances += int(len(labels)) if labels is not None else 0
+            except Exception:
+                continue
+        return images, instances
+
+    try:
+        images = int(len(dataset))
+    except Exception:
+        images = 0
+    return images, instances
+
+
+def _format_validation_table_row(summary, data_loader_val):
+    images, instances = _dataset_image_instance_counts(data_loader_val)
+    return [
+        f"{'all':>22}",
+        f"{images:>11d}",
+        f"{instances:>11d}",
+        f"{float(summary.get('Detection/Precision@0.5IOU', 0.0)):>10.4f}",
+        f"{float(summary.get('Detection/Recall@0.5IOU', 0.0)):>10.4f}",
+        f"{float(summary.get('PascalBoxes_Precision/mAP@0.5IOU', 0.0)):>10.4f}",
+        f"{float(summary.get('PascalBoxes_Precision/mAP@0.5:0.95IOU', 0.0)):>10.4f}",
+        f"{float(summary.get('SmallObject/AP@0.5IOU', 0.0)):>10.4f}",
+    ]
+
+
 def _run_validation_pass(
     model,
     dataset_names_val,
@@ -109,27 +233,12 @@ def _run_validation_pass(
             history_records.append(record)
 
             if summary:
-                log_parts = [
-                    f"val_epoch: {int(epoch)}",
-                    f"dataset: {dataset_name}",
-                ]
-                for key in [
-                    "PascalBoxes_Precision/mAP@0.5IOU",
-                    "PascalBoxes_Precision/mAP@0.5:0.95IOU",
-                    "Detection/Precision@0.5IOU",
-                    "Detection/Recall@0.5IOU",
-                    "SmallObject/AP@0.5IOU",
-                ]:
-                    if key in summary:
-                        short_key = {
-                            "PascalBoxes_Precision/mAP@0.5IOU": "mAP@0.5",
-                            "PascalBoxes_Precision/mAP@0.5:0.95IOU": "mAP@0.5:0.95",
-                            "Detection/Precision@0.5IOU": "precision",
-                            "Detection/Recall@0.5IOU": "recall",
-                            "SmallObject/AP@0.5IOU": "small_ap",
-                        }[key]
-                        log_parts.append(f"{short_key}: {summary[key]:.4f}")
-                logger.info("  ".join(log_parts))
+                logger.info(
+                    "                 Class     Images  Instances      Box(P)          R      mAP50  mAP50-95     smallAP"
+                )
+                logger.info(
+                    "".join(_format_validation_table_row(summary, data_loader_val))
+                )
     finally:
         base_model.train()
         torch.cuda.empty_cache()
@@ -180,11 +289,19 @@ def do_train(
     max_iter = len(data_loader)
     start_iter = arguments["iteration"]
     iter_per_epoch = int(iter_per_epoch or max(1, max_iter))
+    total_epochs = _num_epochs(max_iter, iter_per_epoch)
     val_history = []
+    epoch_summary = _init_epoch_summary()
+    printed_epoch_header = False
 
     model.train()
 
     logger.info("Image Training Mode Enabled")
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.reset_peak_memory_stats()
+        except Exception:
+            pass
 
     start_training_time = time.time()
     end = time.time()
@@ -237,6 +354,7 @@ def do_train(
         loss_dict["total_loss"] = losses.detach()
         loss_dict_reduced = reduce_dict(loss_dict)
         meters.update(**loss_dict_reduced)
+        _update_epoch_summary(epoch_summary, loss_dict_reduced, labels, primary_inputs)
 
         batch_time = time.time() - end
         end = time.time()
@@ -266,6 +384,18 @@ def do_train(
                     log_fields.append(f"{key}: {meters.meters[key].avg:.4f}")
             logger.info(meters.delimiter.join(log_fields))
 
+        epoch = max(1, int((iteration + iter_per_epoch - 1) // iter_per_epoch))
+        epoch_complete = iteration % iter_per_epoch == 0 or iteration == max_iter
+        if epoch_complete:
+            if not printed_epoch_header:
+                logger.info(
+                    "      Epoch    GPU_mem   box_loss   cls_loss  giou_loss  Instances       Size"
+                )
+                printed_epoch_header = True
+            logger.info(
+                "".join(_format_epoch_train_summary(epoch, total_epochs, epoch_summary))
+            )
+
         # ----------------------------------------------------
         # Checkpoint
         # ----------------------------------------------------
@@ -279,7 +409,6 @@ def do_train(
             and iteration >= start_val
             and iteration % val_period == 0
         ):
-            epoch = max(1, int((iteration + iter_per_epoch - 1) // iter_per_epoch))
             logger.info(
                 "Running validation at epoch %d (iter %d/%d).",
                 epoch,
@@ -302,6 +431,14 @@ def do_train(
                 with open(history_path, "w") as f:
                     json.dump(val_history, f, indent=2)
                 logger.info("Saved validation history to %s", history_path)
+
+        if epoch_complete:
+            epoch_summary = _init_epoch_summary()
+            if torch.cuda.is_available():
+                try:
+                    torch.cuda.reset_peak_memory_stats()
+                except Exception:
+                    pass
 
         if iteration == max_iter:
             checkpointer.save("model_final", **arguments)

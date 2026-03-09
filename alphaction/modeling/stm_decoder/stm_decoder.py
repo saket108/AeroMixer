@@ -9,7 +9,6 @@ from .util.box_ops import (
     box_cxcywh_to_xyxy,
     box_xyxy_to_cxcywh,
     box_xyxy_to_xyzr,
-    clip_boxes_tensor,
     box_sampling_from_heatmap,
     box_sampling_from_prior,
 )
@@ -634,6 +633,17 @@ class STMDecoder(nn.Module):
         self.cross_tile_consistency_embed_weight = float(
             getattr(cfg.MODEL.STM, "CROSS_TILE_CONSISTENCY_EMBED_WEIGHT", 0.25)
         )
+        self.description_alignment = bool(
+            getattr(cfg.MODEL.STM, "DESCRIPTION_ALIGNMENT", False)
+        )
+        self.description_alignment_margin = float(
+            getattr(cfg.MODEL.STM, "DESCRIPTION_ALIGNMENT_MARGIN", 0.10)
+        )
+        self.description_query_proj = (
+            nn.Linear(cfg.MODEL.STM.HIDDEN_DIM, self.text_dim, bias=False)
+            if self.use_text_guidance and self.description_alignment
+            else None
+        )
 
         self.num_stages = cfg.MODEL.STM.NUM_STAGES
         self.decoder_stages = nn.ModuleList()
@@ -693,6 +703,10 @@ class STMDecoder(nn.Module):
         if self.cross_tile_consistency:
             base_weight_dict["loss_tile_consistency"] = float(
                 getattr(cfg.MODEL.STM, "CROSS_TILE_CONSISTENCY_WEIGHT", 0.20)
+            )
+        if self.description_alignment:
+            base_weight_dict["loss_desc_align"] = float(
+                getattr(cfg.MODEL.STM, "DESCRIPTION_ALIGNMENT_WEIGHT", 0.15)
             )
         self.weight_dict = dict(base_weight_dict)
 
@@ -1209,6 +1223,136 @@ class STMDecoder(nn.Module):
             return {"loss_tile_consistency": zero}
 
         return {"loss_tile_consistency": torch.stack(loss_terms).mean()}
+
+    def _get_description_text_targets(self, extras, device, dtype):
+        if not isinstance(extras, dict):
+            return None, None
+
+        raw_features = extras.get("description_text_features")
+        raw_texts = extras.get("description_texts")
+        if raw_features is None:
+            return None, None
+        if torch.is_tensor(raw_features):
+            raw_features = [raw_features]
+
+        description_features = []
+        description_texts = []
+        for idx, item in enumerate(raw_features):
+            if item is None:
+                description_features.append(None)
+                description_texts.append([])
+                continue
+
+            feat = torch.as_tensor(item, device=device, dtype=dtype)
+            if feat.ndim == 1:
+                feat = feat.unsqueeze(0)
+            elif feat.ndim > 2:
+                feat = feat.reshape(-1, feat.shape[-1])
+            if feat.numel() == 0:
+                description_features.append(None)
+                description_texts.append([])
+                continue
+
+            description_features.append(F.normalize(feat, dim=-1, eps=1e-6))
+            text_list = []
+            if isinstance(raw_texts, (list, tuple)) and idx < len(raw_texts):
+                candidate = raw_texts[idx]
+                if isinstance(candidate, (list, tuple)):
+                    text_list = [str(text).strip().lower() for text in candidate]
+            description_texts.append(text_list)
+
+        return description_features, description_texts
+
+    def _compute_description_alignment_loss(
+        self, pred_logits, pred_boxes, query_feats, targets, extras
+    ):
+        zero = query_feats.sum() * 0.0
+        if not self.description_alignment:
+            return {"loss_desc_align": zero}
+
+        description_features, description_texts = self._get_description_text_targets(
+            extras=extras,
+            device=query_feats.device,
+            dtype=query_feats.dtype,
+        )
+        if not description_features:
+            return {"loss_desc_align": zero}
+
+        outputs = {
+            "pred_logits": pred_logits,
+            "pred_boxes": pred_boxes,
+        }
+        indices = self.criterion.matcher(outputs, targets)
+
+        matched_queries = []
+        matched_text = []
+        matched_keys = []
+        for batch_idx, (src_idx, tgt_idx) in enumerate(indices):
+            if src_idx.numel() == 0 or tgt_idx.numel() == 0:
+                continue
+            if batch_idx >= len(description_features):
+                continue
+            desc_feat = description_features[batch_idx]
+            if desc_feat is None or desc_feat.numel() == 0:
+                continue
+
+            valid = tgt_idx < desc_feat.size(0)
+            if not bool(valid.any()):
+                continue
+            src_idx = src_idx[valid]
+            tgt_idx = tgt_idx[valid]
+
+            query_embed = query_feats[batch_idx, src_idx]
+            if self.description_query_proj is not None:
+                query_embed = self.description_query_proj(query_embed)
+            query_embed = F.normalize(query_embed, dim=-1, eps=1e-6)
+
+            matched_queries.append(query_embed)
+            matched_text.append(desc_feat[tgt_idx])
+
+            sample_texts = (
+                description_texts[batch_idx]
+                if batch_idx < len(description_texts)
+                else []
+            )
+            for target_idx in tgt_idx.tolist():
+                if target_idx < len(sample_texts):
+                    matched_keys.append(sample_texts[target_idx])
+                else:
+                    matched_keys.append(f"sample_{batch_idx}_{target_idx}")
+
+        if not matched_queries:
+            return {"loss_desc_align": zero}
+
+        query_embed = torch.cat(matched_queries, dim=0)
+        text_embed = torch.cat(matched_text, dim=0)
+        positive = F.cosine_similarity(query_embed, text_embed, dim=-1, eps=1e-6)
+        loss = 1.0 - positive.mean()
+
+        if query_embed.size(0) > 1:
+            similarity = torch.matmul(query_embed, text_embed.t())
+            unique_mask = torch.ones_like(similarity, dtype=torch.bool)
+            for row_idx, key_i in enumerate(matched_keys):
+                for col_idx, key_j in enumerate(matched_keys):
+                    if row_idx == col_idx:
+                        unique_mask[row_idx, col_idx] = False
+                    elif key_i == key_j:
+                        unique_mask[row_idx, col_idx] = False
+
+            if bool(unique_mask.any()):
+                hardest_negative = similarity.masked_fill(~unique_mask, -1.0).max(
+                    dim=-1
+                ).values
+                valid_neg = unique_mask.any(dim=-1)
+                if bool(valid_neg.any()):
+                    margin_loss = F.relu(
+                        hardest_negative[valid_neg]
+                        - positive[valid_neg]
+                        + self.description_alignment_margin
+                    ).mean()
+                    loss = loss + margin_loss
+
+        return {"loss_desc_align": loss}
 
     def get_image_text_context(
         self, text_features, labels=None, vis_cls_feat=None, extras=None
@@ -1792,6 +1936,15 @@ class STMDecoder(nn.Module):
                 pred_boxes=inter_pred_bboxes[-1],
                 query_feats=spatial_queries,
                 whwh=whwh,
+                extras=extras,
+            )
+        )
+        losses.update(
+            self._compute_description_alignment_loss(
+                pred_logits=inter_class_logits[-1],
+                pred_boxes=inter_pred_bboxes[-1],
+                query_feats=spatial_queries,
+                targets=targets,
                 extras=extras,
             )
         )

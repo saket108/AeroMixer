@@ -1,6 +1,11 @@
 import unittest
 
-from alphaction.engine.trainer import _coerce_eval_metrics, _extract_validation_summary
+from alphaction.engine.trainer import (
+    _coerce_eval_metrics,
+    _extract_validation_summary,
+    _format_epoch_train_summary,
+    _format_validation_table_row,
+)
 
 
 class TestTrainerValidationSummary(unittest.TestCase):
@@ -31,6 +36,53 @@ class TestTrainerValidationSummary(unittest.TestCase):
         )
         self.assertAlmostEqual(summary["Detection/Precision@0.5IOU"], 0.8)
         self.assertNotIn("ignored", summary)
+
+    def test_format_epoch_train_summary_uses_expected_columns(self):
+        epoch_summary = {
+            "num_batches": 2,
+            "loss_sums": {
+                "loss_bbox": 4.0,
+                "loss_ce": 6.0,
+                "loss_giou": 2.0,
+            },
+            "instance_sum": 10,
+            "size_label": "640",
+            "gpu_mem_gb": 6.25,
+        }
+        row = "".join(_format_epoch_train_summary(3, 50, epoch_summary))
+        self.assertIn("3/50", row)
+        self.assertIn("6.25G", row)
+        self.assertIn("2.0000", row)
+        self.assertIn("3.0000", row)
+        self.assertIn("1.0000", row)
+        self.assertIn("640", row)
+
+    def test_format_validation_table_row_uses_dataset_counts(self):
+        class DummyDataset:
+            samples = [
+                {"labels": [0, 1]},
+                {"labels": [1]},
+            ]
+
+        class DummyLoader:
+            dataset = DummyDataset()
+
+        summary = {
+            "Detection/Precision@0.5IOU": 0.5,
+            "Detection/Recall@0.5IOU": 0.25,
+            "PascalBoxes_Precision/mAP@0.5IOU": 0.1,
+            "PascalBoxes_Precision/mAP@0.5:0.95IOU": 0.04,
+            "SmallObject/AP@0.5IOU": 0.01,
+        }
+        row = "".join(_format_validation_table_row(summary, DummyLoader()))
+        self.assertIn("all", row)
+        self.assertIn("2", row)
+        self.assertIn("3", row)
+        self.assertIn("0.5000", row)
+        self.assertIn("0.2500", row)
+        self.assertIn("0.1000", row)
+        self.assertIn("0.0400", row)
+        self.assertIn("0.0100", row)
 
 
 if __name__ == "__main__":

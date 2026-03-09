@@ -62,14 +62,16 @@ _TILE_KEY_RE = re.compile(r"^(?P<base>.+)__x(?P<x>\d+)_y(?P<y>\d+)$")
 
 class ImageDataset(torch.utils.data.Dataset):
     """Pure image dataset with an image-first sample interface.
-    
+
     Supports multimodal (image + text) mode for open vocabulary detection.
     """
 
     def __init__(self, cfg, split):
         self.cfg = cfg
         self._split = split
-        self.annotation_format = str(getattr(cfg.DATA, "ANNOTATION_FORMAT", "auto")).lower()
+        self.annotation_format = str(
+            getattr(cfg.DATA, "ANNOTATION_FORMAT", "auto")
+        ).lower()
         self.input_type = str(getattr(cfg.DATA, "INPUT_TYPE", "image")).lower()
         self.open_vocabulary = cfg.DATA.OPEN_VOCABULARY
         self.eval_open = cfg.TEST.EVAL_OPEN
@@ -83,7 +85,7 @@ class ImageDataset(torch.utils.data.Dataset):
         self.text_input = None
         self.vocabulary = {"closed": [], "open": []}
         self._shape_cache = {}
-        
+
         # Multimodal support
         self.multimodal = getattr(cfg.DATA, "MULTIMODAL", False)
         self.text_features = None
@@ -98,7 +100,9 @@ class ImageDataset(torch.utils.data.Dataset):
 
         self.data_dir = cfg.DATA.PATH_TO_DATA_DIR
         frame_dir = getattr(cfg.DATA, "FRAME_DIR", "")
-        self.image_dir = os.path.join(self.data_dir, frame_dir) if frame_dir else self.data_dir
+        self.image_dir = (
+            os.path.join(self.data_dir, frame_dir) if frame_dir else self.data_dir
+        )
         if not os.path.isdir(self.image_dir):
             fallback_image_dir = os.path.join(self.data_dir, "images")
             if os.path.isdir(fallback_image_dir):
@@ -108,7 +112,13 @@ class ImageDataset(torch.utils.data.Dataset):
             else:
                 raise AssertionError(f"Image dir not found: {self.image_dir}")
 
-        self.annotation_mode, samples, classes_set, class_name_map, sample_extras_map = self._load_annotations(split)
+        (
+            self.annotation_mode,
+            samples,
+            classes_set,
+            class_name_map,
+            sample_extras_map,
+        ) = self._load_annotations(split)
         self.image_list = sorted(list(samples.keys()))
         self.annos = {}
         for image_rel_path, entries in samples.items():
@@ -118,12 +128,17 @@ class ImageDataset(torch.utils.data.Dataset):
                 self.annos[image_rel_path] = np.array(entries, dtype=np.float32)
 
         self.classes = sorted(list(classes_set))
-        self.class_id_to_idx = {class_id: idx for idx, class_id in enumerate(self.classes)}
-        self.idx_to_class_id = {idx: class_id for class_id, idx in self.class_id_to_idx.items()}
+        self.class_id_to_idx = {
+            class_id: idx for idx, class_id in enumerate(self.classes)
+        }
+        self.idx_to_class_id = {
+            idx: class_id for class_id, idx in self.class_id_to_idx.items()
+        }
         self.num_classes = len(self.classes) if len(self.classes) > 0 else 1
         if len(self.classes) > 0:
             self.class_names = [
-                class_name_map.get(class_id, f"class_{class_id}") for class_id in self.classes
+                class_name_map.get(class_id, f"class_{class_id}")
+                for class_id in self.classes
             ]
         else:
             self.class_names = ["class_0"]
@@ -139,7 +154,11 @@ class ImageDataset(torch.utils.data.Dataset):
         self.samples = []
         for img_rel in self.image_list:
             ann = self.annos[img_rel]
-            boxes = ann[:, :4].astype(np.float32) if len(ann) else np.zeros((0, 4), dtype=np.float32)
+            boxes = (
+                ann[:, :4].astype(np.float32)
+                if len(ann)
+                else np.zeros((0, 4), dtype=np.float32)
+            )
             if len(ann):
                 labels = np.array(
                     [self.class_id_to_idx[int(class_id)] for class_id in ann[:, 4]],
@@ -150,7 +169,11 @@ class ImageDataset(torch.utils.data.Dataset):
             severities = None
             if len(ann) and ann.shape[1] > 5:
                 severities = ann[:, 5].astype(np.float32)
-            sample_extras = sample_extras_map.get(img_rel, None) if isinstance(sample_extras_map, dict) else None
+            sample_extras = (
+                sample_extras_map.get(img_rel, None)
+                if isinstance(sample_extras_map, dict)
+                else None
+            )
             self.samples.append(
                 {
                     "image_rel": img_rel,
@@ -181,7 +204,7 @@ class ImageDataset(torch.utils.data.Dataset):
 
     def set_multimodal(self, multimodal):
         """Enable or disable multimodal mode.
-        
+
         Args:
             multimodal: Boolean to enable/disable multimodal mode
         """
@@ -192,7 +215,7 @@ class ImageDataset(torch.utils.data.Dataset):
 
     def set_text_features(self, text_features):
         """Set text features for multimodal detection.
-        
+
         Args:
             text_features: Numpy array of text features [num_classes, feature_dim]
         """
@@ -200,19 +223,19 @@ class ImageDataset(torch.utils.data.Dataset):
 
     def get_text_prompts(self, index=None):
         """Get text prompts for the dataset or a specific sample.
-        
+
         Args:
             index: Optional sample index. If None, returns prompts for all classes.
-            
+
         Returns:
             List of text prompts
         """
         if self.text_prompts is None:
             return None
-            
+
         if index is None:
             return self.text_prompts
-        
+
         # Return prompts for a specific sample's labels
         sample = self.samples[index]
         labels = sample["labels"]
@@ -220,19 +243,19 @@ class ImageDataset(torch.utils.data.Dataset):
 
     def get_text_features(self, index=None):
         """Get text features for the dataset or a specific sample.
-        
+
         Args:
             index: Optional sample index. If None, returns features for all classes.
-            
+
         Returns:
             Numpy array of text features or None if not available
         """
         if self.text_features is None:
             return None
-            
+
         if index is None:
             return self.text_features
-        
+
         # Return features for a specific sample's labels
         sample = self.samples[index]
         labels = sample["labels"]
@@ -240,7 +263,7 @@ class ImageDataset(torch.utils.data.Dataset):
 
     def _generate_text_prompts(self):
         """Generate text prompts for each class.
-        
+
         Returns:
             List of text prompts for each class
         """
@@ -251,7 +274,9 @@ class ImageDataset(torch.utils.data.Dataset):
         return prompts
 
     def _format_prompt(self, class_name):
-        template = str(getattr(self.cfg.DATA.TEXT, "PROMPT_TEMPLATE", "a photo of {}")).strip()
+        template = str(
+            getattr(self.cfg.DATA.TEXT, "PROMPT_TEMPLATE", "a photo of {}")
+        ).strip()
         if "{}" in template:
             return template.format(class_name)
         return f"{template} {class_name}".strip()
@@ -275,12 +300,12 @@ class ImageDataset(torch.utils.data.Dataset):
             result["annotation_extras"] = sample["annotation_extras"]
         if sample.get("tile_meta", None) is not None:
             result["tile_meta"] = sample["tile_meta"]
-        
+
         # Add multimodal information if enabled
         if self.multimodal:
             result["text_prompts"] = self.get_text_prompts(index)
             result["text_features"] = self.get_text_features(index)
-        
+
         return result
 
     def get_video_info(self, index):
@@ -328,8 +353,13 @@ class ImageDataset(torch.utils.data.Dataset):
                 severity_vals = None
 
             annotation_extras = sample.get("annotation_extras", None)
-            if isinstance(annotation_extras, list) and len(annotation_extras) == keep_mask.shape[0]:
-                annotation_extras = [item for item, k in zip(annotation_extras, keep_mask.tolist()) if k]
+            if (
+                isinstance(annotation_extras, list)
+                and len(annotation_extras) == keep_mask.shape[0]
+            ):
+                annotation_extras = [
+                    item for item, k in zip(annotation_extras, keep_mask.tolist()) if k
+                ]
         else:
             severity_vals = sample.get("severity", None)
             annotation_extras = sample.get("annotation_extras", None)
@@ -337,7 +367,9 @@ class ImageDataset(torch.utils.data.Dataset):
         pathways = self.cfg.MODEL.BACKBONE.PATHWAYS
         imgs_packed = utils.pack_pathway_output(self.cfg, imgs_proc, pathways=pathways)
         primary_input, secondary_input = (
-            (imgs_packed[0], None) if pathways == 1 else (imgs_packed[0], imgs_packed[1])
+            (imgs_packed[0], None)
+            if pathways == 1
+            else (imgs_packed[0], imgs_packed[1])
         )
 
         h, w = primary_input.shape[-2:]
@@ -345,12 +377,11 @@ class ImageDataset(torch.utils.data.Dataset):
 
         label_arrs = None
         if self._split == "train":
-           # IMPORTANT: STM expects class indices NOT one-hot
+            # IMPORTANT: STM expects class indices NOT one-hot
             if len(box_labels) == 0:
                 label_arrs = np.zeros((0,), dtype=np.int64)
             else:
                 label_arrs = box_labels.astype(np.int64)
-
 
         extras = {"extra_boxes": None, "image_rel": img_rel, "sample_id": index}
         if severity_vals is not None:
@@ -361,14 +392,22 @@ class ImageDataset(torch.utils.data.Dataset):
             extras["tile_meta"] = sample["tile_meta"]
 
         boxes_out = boxes_proc if boxes_proc is None else boxes_proc.astype(np.float32)
-        
+
         # Add multimodal extras if enabled
         if self.multimodal:
             extras["text_prompts"] = self.get_text_prompts(index)
             if self.text_features is not None:
                 extras["text_features"] = self.get_text_features(index)
 
-        return primary_input, secondary_input, whwh, boxes_out, label_arrs, extras, index
+        return (
+            primary_input,
+            secondary_input,
+            whwh,
+            boxes_out,
+            label_arrs,
+            extras,
+            index,
+        )
 
     def _get_image_shape(self, image_rel_path):
         if image_rel_path not in self._shape_cache:
@@ -474,8 +513,16 @@ class ImageDataset(torch.utils.data.Dataset):
         }
 
         if self.annotation_format in loaders:
-            samples, classes_set, class_name_map, sample_extras_map = loaders[self.annotation_format]()
-            return self.annotation_format, samples, classes_set, class_name_map, sample_extras_map
+            samples, classes_set, class_name_map, sample_extras_map = loaders[
+                self.annotation_format
+            ]()
+            return (
+                self.annotation_format,
+                samples,
+                classes_set,
+                class_name_map,
+                sample_extras_map,
+            )
 
         if self.annotation_format != "auto":
             raise ValueError(
@@ -486,8 +533,16 @@ class ImageDataset(torch.utils.data.Dataset):
         errors = []
         for format_name in ["txt", "yolo", "coco", "voc", "custom_json"]:
             try:
-                samples, classes_set, class_name_map, sample_extras_map = loaders[format_name]()
-                return format_name, samples, classes_set, class_name_map, sample_extras_map
+                samples, classes_set, class_name_map, sample_extras_map = loaders[
+                    format_name
+                ]()
+                return (
+                    format_name,
+                    samples,
+                    classes_set,
+                    class_name_map,
+                    sample_extras_map,
+                )
             except Exception as exc:
                 errors.append(f"{format_name}: {exc}")
 
@@ -529,7 +584,9 @@ class ImageDataset(torch.utils.data.Dataset):
 
     def _load_yolo_annotations(self, split):
         split_aliases = self._split_aliases(split)
-        image_split_dir, used_split_alias = self._find_existing_split_dir(self.image_dir, split_aliases)
+        image_split_dir, used_split_alias = self._find_existing_split_dir(
+            self.image_dir, split_aliases
+        )
         if image_split_dir is None:
             raise AssertionError(
                 f"YOLO image split directory not found under {self.image_dir}. Tried: {split_aliases}"
@@ -539,7 +596,9 @@ class ImageDataset(torch.utils.data.Dataset):
         labels_scan_root = labels_root if os.path.isdir(labels_root) else self.data_dir
         class_name_map = self._load_yolo_class_names()
 
-        label_aliases = [used_split_alias] + [alias for alias in split_aliases if alias != used_split_alias]
+        label_aliases = [used_split_alias] + [
+            alias for alias in split_aliases if alias != used_split_alias
+        ]
         label_split_dir, _ = self._find_existing_split_dir(labels_root, label_aliases)
         if label_split_dir is None:
             label_split_dir = labels_scan_root
@@ -553,9 +612,13 @@ class ImageDataset(torch.utils.data.Dataset):
                     continue
 
                 img_path = os.path.join(root, file_name)
-                img_rel = self._normalize_relpath(os.path.relpath(img_path, self.image_dir))
+                img_rel = self._normalize_relpath(
+                    os.path.relpath(img_path, self.image_dir)
+                )
                 rel_path_in_split = os.path.relpath(img_path, image_split_dir)
-                label_path = self._resolve_yolo_label_path(image_split_dir, label_split_dir, rel_path_in_split)
+                label_path = self._resolve_yolo_label_path(
+                    image_split_dir, label_split_dir, rel_path_in_split
+                )
 
                 image_boxes = []
                 if os.path.exists(label_path):
@@ -567,7 +630,9 @@ class ImageDataset(torch.utils.data.Dataset):
                                 continue
                             parts = line.split()
                             if len(parts) < 5:
-                                raise ValueError(f"Bad YOLO label at {label_path}:{line_number}")
+                                raise ValueError(
+                                    f"Bad YOLO label at {label_path}:{line_number}"
+                                )
 
                             cls_id = int(float(parts[0]))
                             x_center, y_center, box_w, box_h = map(float, parts[1:5])
@@ -714,7 +779,9 @@ class ImageDataset(torch.utils.data.Dataset):
             if image_file is None:
                 continue
 
-            img_rel = self._normalize_relpath(os.path.relpath(image_file, self.image_dir))
+            img_rel = self._normalize_relpath(
+                os.path.relpath(image_file, self.image_dir)
+            )
             image_boxes = []
             for obj in root.findall("object"):
                 class_name = obj.findtext("name")
@@ -758,7 +825,9 @@ class ImageDataset(torch.utils.data.Dataset):
     def _load_custom_json_annotations(self, split):
         ann_file = self._find_custom_json_annotation_file(split)
         if ann_file is None:
-            raise AssertionError(f"Custom JSON annotation file not found for split '{split}'.")
+            raise AssertionError(
+                f"Custom JSON annotation file not found for split '{split}'."
+            )
 
         with open(ann_file, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -771,14 +840,6 @@ class ImageDataset(torch.utils.data.Dataset):
             split_aliases = split_aliases.union({"train"})
         else:
             split_aliases = split_aliases.union({"val", "valid", "validation", "test"})
-
-        candidate_roots = [
-            self.image_dir,
-            self.data_dir,
-            os.path.join(self.data_dir, "images"),
-            os.path.dirname(ann_file),
-            os.path.dirname(os.path.dirname(ann_file)),
-        ]
 
         samples = defaultdict(list)
         sample_extras_map = {}
@@ -800,6 +861,11 @@ class ImageDataset(torch.utils.data.Dataset):
             if file_name is None:
                 continue
 
+            candidate_roots = self._build_custom_json_candidate_roots(
+                split=split,
+                rec_split=rec_split,
+                ann_file=ann_file,
+            )
             img_rel = self._resolve_relative_image_path(str(file_name), candidate_roots)
             img_h, img_w = self._get_image_shape(img_rel)
             img_w = float(img_w)
@@ -888,11 +954,54 @@ class ImageDataset(torch.utils.data.Dataset):
                 sample_extras_map[img_rel] = image_meta
 
         if len(samples) == 0:
-            raise AssertionError(f"No custom JSON samples found in {ann_file} for split '{split}'")
+            raise AssertionError(
+                f"No custom JSON samples found in {ann_file} for split '{split}'"
+            )
 
         return samples, classes_set, class_name_map, sample_extras_map
 
-    def _resolve_yolo_label_path(self, image_split_dir, label_split_dir, rel_path_in_split):
+    def _build_custom_json_candidate_roots(self, split, rec_split, ann_file):
+        tokens = []
+        for token in [str(rec_split).strip().lower(), str(split).strip().lower()]:
+            if token and token not in tokens:
+                tokens.append(token)
+        for token in self._split_aliases(split):
+            token = str(token).strip().lower()
+            if token and token not in tokens:
+                tokens.append(token)
+
+        roots = [
+            self.image_dir,
+            self.data_dir,
+            os.path.join(self.data_dir, "images"),
+            os.path.dirname(ann_file),
+            os.path.dirname(os.path.dirname(ann_file)),
+        ]
+
+        for token in tokens:
+            roots.extend(
+                [
+                    os.path.join(self.data_dir, token, "images"),
+                    os.path.join(self.data_dir, token),
+                    os.path.join(self.data_dir, "images", token),
+                    os.path.join(os.path.dirname(ann_file), token, "images"),
+                    os.path.join(os.path.dirname(ann_file), token),
+                ]
+            )
+
+        deduped = []
+        seen = set()
+        for root in roots:
+            norm = self._normalize_relpath(root) if isinstance(root, str) else root
+            if not norm or norm in seen:
+                continue
+            seen.add(norm)
+            deduped.append(root)
+        return deduped
+
+    def _resolve_yolo_label_path(
+        self, image_split_dir, label_split_dir, rel_path_in_split
+    ):
         stem_rel = os.path.splitext(self._normalize_relpath(rel_path_in_split))[0]
         parts = [p for p in stem_rel.split("/") if p]
         base_name = os.path.basename(stem_rel) + ".txt"
@@ -942,7 +1051,9 @@ class ImageDataset(torch.utils.data.Dataset):
             os.path.join(self.data_dir, "data.yaml"),
             os.path.join(self.data_dir, "dataset.yaml"),
         ]
-        yaml_file = next((path for path in yaml_candidates if os.path.exists(path)), None)
+        yaml_file = next(
+            (path for path in yaml_candidates if os.path.exists(path)), None
+        )
         if yaml_file is None:
             return class_name_map
 
@@ -1074,7 +1185,12 @@ class ImageDataset(torch.utils.data.Dataset):
     def _extract_custom_json_severity(self, ann):
         damage_metrics = ann.get("damage_metrics", None)
         if isinstance(damage_metrics, dict):
-            for key in ["raw_severity_score", "severity_score", "severity", "risk_score"]:
+            for key in [
+                "raw_severity_score",
+                "severity_score",
+                "severity",
+                "risk_score",
+            ]:
                 if key in damage_metrics and damage_metrics[key] is not None:
                     try:
                         return float(damage_metrics[key])
@@ -1083,7 +1199,12 @@ class ImageDataset(torch.utils.data.Dataset):
 
         risk_assessment = ann.get("risk_assessment", None)
         if isinstance(risk_assessment, dict):
-            for key in ["raw_severity_score", "severity_score", "severity", "risk_score"]:
+            for key in [
+                "raw_severity_score",
+                "severity_score",
+                "severity",
+                "risk_score",
+            ]:
                 if key in risk_assessment and risk_assessment[key] is not None:
                     try:
                         return float(risk_assessment[key])
@@ -1148,7 +1269,9 @@ class ImageDataset(torch.utils.data.Dataset):
                 continue
             candidate = os.path.join(root, file_name.replace("/", os.sep))
             if os.path.exists(candidate):
-                return self._normalize_relpath(os.path.relpath(candidate, self.image_dir))
+                return self._normalize_relpath(
+                    os.path.relpath(candidate, self.image_dir)
+                )
 
         return file_name
 
@@ -1180,7 +1303,9 @@ class ImageDataset(torch.utils.data.Dataset):
         vocab_open_file = str(getattr(self.cfg.IMAGES, "VOCAB_OPEN_FILE", "")).strip()
         if vocab_open_file:
             vocab_open_path = self._resolve_vocab_path(vocab_open_file)
-            open_source = self._normalize_vocab_entries(self._read_vocab_data(vocab_open_path))
+            open_source = self._normalize_vocab_entries(
+                self._read_vocab_data(vocab_open_path)
+            )
 
         return closed_source, open_source
 
@@ -1198,7 +1323,8 @@ class ImageDataset(torch.utils.data.Dataset):
 
             if closed_data is None:
                 closed_data = self._find_section_in_json(
-                    vocab_data, ["classes", "labels", "categories", "names", "vocabulary", "vocab"]
+                    vocab_data,
+                    ["classes", "labels", "categories", "names", "vocabulary", "vocab"],
                 )
 
             if closed_data is not None or open_data is not None:
@@ -1211,7 +1337,8 @@ class ImageDataset(torch.utils.data.Dataset):
             return None
 
         alias_set = {
-            str(alias).strip().lower().replace("-", "_").replace(" ", "_") for alias in aliases
+            str(alias).strip().lower().replace("-", "_").replace(" ", "_")
+            for alias in aliases
         }
 
         if isinstance(node, dict):
@@ -1278,7 +1405,9 @@ class ImageDataset(torch.utils.data.Dataset):
             if "prompt" in caption:
                 return self._normalize_caption(caption["prompt"], default_text)
             if len(caption) > 0:
-                return self._normalize_caption(next(iter(caption.values())), default_text)
+                return self._normalize_caption(
+                    next(iter(caption.values())), default_text
+                )
             return str(default_text)
         if isinstance(caption, list):
             cleaned = [str(item).strip() for item in caption if str(item).strip()]
@@ -1293,7 +1422,9 @@ class ImageDataset(torch.utils.data.Dataset):
             return
 
         if isinstance(data, dict):
-            parsed_entry = self._extract_vocab_entry_from_dict(data, fallback_key=key_hint)
+            parsed_entry = self._extract_vocab_entry_from_dict(
+                data, fallback_key=key_hint
+            )
             if parsed_entry is not None and self._dict_is_entry_like(data):
                 self._add_vocab_entry(entries, parsed_entry[0], parsed_entry[1])
                 return
@@ -1307,11 +1438,15 @@ class ImageDataset(torch.utils.data.Dataset):
                     continue
 
                 if isinstance(raw_value, dict):
-                    parsed_child = self._extract_vocab_entry_from_dict(raw_value, fallback_key=key)
+                    parsed_child = self._extract_vocab_entry_from_dict(
+                        raw_value, fallback_key=key
+                    )
                     if parsed_child is not None:
                         self._add_vocab_entry(entries, parsed_child[0], parsed_child[1])
                     else:
-                        next_hint = None if self._is_vocab_container_key(key_lower) else key
+                        next_hint = (
+                            None if self._is_vocab_container_key(key_lower) else key
+                        )
                         self._extract_vocab_entries(
                             raw_value, entries, key_hint=next_hint, depth=depth + 1
                         )
@@ -1335,7 +1470,9 @@ class ImageDataset(torch.utils.data.Dataset):
         if isinstance(data, list):
             for idx, item in enumerate(data):
                 if isinstance(item, dict):
-                    parsed_item = self._extract_vocab_entry_from_dict(item, fallback_key=None)
+                    parsed_item = self._extract_vocab_entry_from_dict(
+                        item, fallback_key=None
+                    )
                     if parsed_item is not None:
                         self._add_vocab_entry(entries, parsed_item[0], parsed_item[1])
                     else:
@@ -1344,7 +1481,9 @@ class ImageDataset(torch.utils.data.Dataset):
                             item, entries, key_hint=next_hint, depth=depth + 1
                         )
                 elif isinstance(item, list):
-                    self._extract_vocab_entries(item, entries, key_hint=key_hint, depth=depth + 1)
+                    self._extract_vocab_entries(
+                        item, entries, key_hint=key_hint, depth=depth + 1
+                    )
                 elif isinstance(item, (str, int, float)):
                     label = str(item).strip()
                     if not label:
@@ -1366,7 +1505,14 @@ class ImageDataset(torch.utils.data.Dataset):
         lowered = {str(k).strip().lower(): v for k, v in data.items()}
 
         key = None
-        for field in ["name", "label", "class", "class_name", "category", "category_name"]:
+        for field in [
+            "name",
+            "label",
+            "class",
+            "class_name",
+            "category",
+            "category_name",
+        ]:
             value = lowered.get(field, None)
             if value is not None and str(value).strip():
                 key = str(value).strip()
@@ -1441,7 +1587,9 @@ class ImageDataset(torch.utils.data.Dataset):
         key_str = str(key).strip()
         if not key_str or key_str in entries:
             return
-        entries[key_str] = {"caption": self._normalize_caption(caption, default_text=key_str)}
+        entries[key_str] = {
+            "caption": self._normalize_caption(caption, default_text=key_str)
+        }
 
     def _is_vocab_container_key(self, key_lower):
         return key_lower in {

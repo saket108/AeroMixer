@@ -321,6 +321,87 @@ class LiteTextEncoder(nn.Module):
         pooled = self.output_proj(pooled)
         return F.normalize(pooled, dim=-1)
 
+    def encode_texts(self, text_data, device=None):
+        if device is None:
+            device = self.position_embedding.device
+
+        if text_data is None:
+            return torch.zeros(
+                0,
+                self.embed_dim,
+                device=device,
+                dtype=self.position_embedding.dtype,
+            )
+
+        if isinstance(text_data, (str, dict)):
+            text_items = [text_data]
+        else:
+            text_items = list(text_data)
+
+        if len(text_items) == 0:
+            return torch.zeros(
+                0,
+                self.embed_dim,
+                device=device,
+                dtype=self.position_embedding.dtype,
+            )
+
+        token_ids = torch.zeros(
+            len(text_items),
+            self.max_variants,
+            self.max_tokens,
+            dtype=torch.long,
+            device=device,
+        )
+        token_mask = torch.zeros(
+            len(text_items),
+            self.max_variants,
+            self.max_tokens,
+            dtype=torch.bool,
+            device=device,
+        )
+        variant_mask = torch.zeros(
+            len(text_items),
+            self.max_variants,
+            dtype=torch.bool,
+            device=device,
+        )
+
+        for item_idx, item in enumerate(text_items):
+            default_text = f"item_{item_idx}"
+            variants = _normalize_vocab_variants(item, default_text)[: self.max_variants]
+            for variant_idx, caption in enumerate(variants):
+                ids, mask = self._tokenize(caption)
+                token_ids[item_idx, variant_idx] = ids.to(device=device)
+                token_mask[item_idx, variant_idx] = mask.to(device=device)
+                variant_mask[item_idx, variant_idx] = True
+
+        flat_ids = token_ids.view(-1, self.max_tokens)
+        flat_mask = token_mask.view(-1, self.max_tokens)
+        active = flat_mask.any(dim=1)
+        if not bool(active.any()):
+            return torch.zeros(
+                len(text_items),
+                self.embed_dim,
+                device=device,
+                dtype=self.position_embedding.dtype,
+            )
+
+        encoded = self._encode_sequences(flat_ids[active], flat_mask[active])
+        all_encoded = torch.zeros(
+            flat_ids.size(0),
+            self.embed_dim,
+            device=device,
+            dtype=encoded.dtype,
+        )
+        all_encoded[active] = encoded
+        all_encoded = all_encoded.view(len(text_items), self.max_variants, self.embed_dim)
+
+        variant_weights = variant_mask.unsqueeze(-1).to(all_encoded.dtype)
+        text_features = (all_encoded * variant_weights).sum(dim=1)
+        text_features = text_features / variant_weights.sum(dim=1).clamp(min=1.0)
+        return F.normalize(text_features, dim=-1)
+
     def forward(self, device=None, cond=None):
         return self.forward_text(device=device, cond=cond)
 

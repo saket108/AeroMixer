@@ -697,6 +697,82 @@ class AeroLiteDetector(nn.Module):
 
         return None
 
+    def _format_description_prompt(self, annotation):
+        if not isinstance(annotation, dict):
+            return "defect"
+
+        parts = []
+        category = str(annotation.get("category_name", "")).strip()
+        description = str(annotation.get("description", "")).strip()
+        use_category = bool(
+            getattr(self.cfg.MODEL.STM, "DESCRIPTION_ALIGNMENT_USE_CATEGORY", True)
+        )
+        if use_category and category:
+            parts.append(category)
+        if description and description.lower() != category.lower():
+            parts.append(description)
+
+        zone = annotation.get("zone_estimation", None)
+        if isinstance(zone, str) and zone.strip():
+            parts.append(f"zone {zone.strip()}")
+
+        risk = annotation.get("risk_assessment", None)
+        if isinstance(risk, dict):
+            severity_level = str(risk.get("severity_level", "")).strip()
+            if severity_level:
+                parts.append(f"severity {severity_level}")
+
+        damage = annotation.get("damage_metrics", None)
+        if isinstance(damage, dict):
+            severity_score = damage.get("raw_severity_score", None)
+            try:
+                severity_score = float(severity_score)
+            except Exception:
+                severity_score = None
+            if severity_score is not None and severity_score == severity_score:
+                parts.append(f"score {severity_score:.2f}")
+
+        prompt = ". ".join(part for part in parts if part)
+        return prompt if prompt else "defect"
+
+    def _encode_annotation_descriptions(self, extras, device, dtype):
+        if not uses_text_branch(self.cfg):
+            return None, None
+
+        text_encoder = getattr(self.backbone, "text_encoder", None)
+        if text_encoder is None or not hasattr(text_encoder, "encode_texts"):
+            return None, None
+
+        annotation_extras = extras.get("annotation_extras")
+        if not isinstance(annotation_extras, list):
+            return None, None
+
+        description_features = []
+        description_texts = []
+        text_dim = _resolve_text_encoder_dim(self.cfg)
+        has_descriptions = False
+
+        for sample_ann in annotation_extras:
+            if not isinstance(sample_ann, list) or len(sample_ann) == 0:
+                description_features.append(
+                    torch.zeros(0, text_dim, device=device, dtype=dtype)
+                )
+                description_texts.append([])
+                continue
+
+            prompts = [self._format_description_prompt(item) for item in sample_ann]
+            sample_features = text_encoder.encode_texts(prompts, device=device).to(
+                device=device, dtype=dtype
+            )
+            description_features.append(sample_features)
+            description_texts.append(prompts)
+            if sample_features.numel() > 0:
+                has_descriptions = True
+
+        if not has_descriptions:
+            return None, None
+        return description_features, description_texts
+
     def _build_tile_meta_tensor(self, extras, batch_size, device, dtype):
         if not isinstance(extras, dict):
             return None
@@ -955,6 +1031,19 @@ class AeroLiteDetector(nn.Module):
             if tile_summary is not None:
                 extras = dict(extras)
                 extras["tile_global_context"] = tile_summary
+
+        if self.training:
+            description_features, description_texts = (
+                self._encode_annotation_descriptions(
+                    extras,
+                    device=primary_inputs.device,
+                    dtype=feature_dtype,
+                )
+            )
+            if description_features is not None:
+                extras = dict(extras)
+                extras["description_text_features"] = description_features
+                extras["description_texts"] = description_texts
 
         return self.stm_head(
             mapped_features,

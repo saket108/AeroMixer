@@ -53,6 +53,49 @@ class TestMultimodalLiteDetector(unittest.TestCase):
             torch.allclose(text_features.norm(dim=-1), torch.ones(3), atol=1e-4)
         )
 
+    def test_backbone_text_encoder_can_encode_free_text_descriptions(self):
+        cfg = self._build_cfg()
+        model = AeroLiteDetector(cfg)
+
+        text_features = model.backbone.text_encoder.encode_texts(
+            [
+                "dent on lower fuselage panel with medium severity",
+                "thin scratch near rivet line",
+            ],
+            device=torch.device("cpu"),
+        )
+
+        self.assertEqual(tuple(text_features.shape), (2, cfg.MODEL.LITE_TEXT.EMBED_DIM))
+        self.assertTrue(
+            torch.allclose(text_features.norm(dim=-1), torch.ones(2), atol=1e-4)
+        )
+
+    def test_detector_encodes_annotation_descriptions_for_training(self):
+        cfg = self._build_cfg()
+        model = AeroLiteDetector(cfg)
+
+        description_features, description_texts = model._encode_annotation_descriptions(
+            {
+                "annotation_extras": [
+                    [
+                        {
+                            "category_name": "dent",
+                            "description": "broad dent near panel seam",
+                            "risk_assessment": {"severity_level": "medium"},
+                        }
+                    ]
+                ]
+            },
+            device=torch.device("cpu"),
+            dtype=torch.float32,
+        )
+
+        self.assertEqual(len(description_features), 1)
+        self.assertEqual(tuple(description_features[0].shape), (1, cfg.MODEL.LITE_TEXT.EMBED_DIM))
+        self.assertEqual(len(description_texts[0]), 1)
+        self.assertIn("dent", description_texts[0][0])
+        self.assertIn("broad dent near panel seam", description_texts[0][0])
+
     def test_amstage_text_fusion_changes_foreground_logits(self):
         stage = AMStage(
             query_dim=16,
@@ -534,6 +577,68 @@ class TestMultimodalLiteDetector(unittest.TestCase):
         self.assertTrue(torch.isfinite(loss_consistent).item())
         self.assertTrue(torch.isfinite(loss_inconsistent).item())
         self.assertLess(float(loss_consistent), float(loss_inconsistent))
+
+    def test_description_alignment_loss_prefers_matching_text_embeddings(self):
+        cfg = self._build_cfg()
+        cfg.defrost()
+        cfg.MODEL.STM.DESCRIPTION_ALIGNMENT = True
+        cfg.freeze()
+        decoder = STMDecoder(cfg, image_mode=True)
+        with torch.no_grad():
+            decoder.description_query_proj.weight.copy_(
+                torch.eye(cfg.MODEL.STM.HIDDEN_DIM, cfg.MODEL.LITE_TEXT.EMBED_DIM)
+            )
+
+        pred_logits = torch.full((1, 2, 4), -4.0, dtype=torch.float32)
+        pred_logits[0, 0, 0] = 6.0
+        pred_logits[0, 1, 1] = 6.0
+        pred_boxes = torch.tensor(
+            [[[10.0, 10.0, 20.0, 20.0], [30.0, 30.0, 40.0, 40.0]]],
+            dtype=torch.float32,
+        )
+        targets = [
+            {
+                "boxes_xyxy": pred_boxes[0].clone(),
+                "labels": torch.tensor([0, 1], dtype=torch.int64),
+            }
+        ]
+
+        description_features = torch.zeros(2, cfg.MODEL.LITE_TEXT.EMBED_DIM)
+        description_features[0, 0] = 1.0
+        description_features[1, 1] = 1.0
+        extras = {
+            "description_text_features": [description_features],
+            "description_texts": [["dent panel damage", "scratch near seam"]],
+        }
+
+        query_aligned = torch.zeros(1, 2, cfg.MODEL.STM.HIDDEN_DIM)
+        query_aligned[0, 0, 0] = 1.0
+        query_aligned[0, 1, 1] = 1.0
+        query_swapped = torch.zeros(1, 2, cfg.MODEL.STM.HIDDEN_DIM)
+        query_swapped[0, 0, 1] = 1.0
+        query_swapped[0, 1, 0] = 1.0
+
+        loss_aligned = decoder._compute_description_alignment_loss(
+            pred_logits=pred_logits,
+            pred_boxes=pred_boxes,
+            query_feats=query_aligned,
+            targets=targets,
+            extras=extras,
+        )["loss_desc_align"]
+        loss_swapped = decoder._compute_description_alignment_loss(
+            pred_logits=pred_logits,
+            pred_boxes=pred_boxes,
+            query_feats=query_swapped,
+            targets=targets,
+            extras=extras,
+        )["loss_desc_align"]
+
+        self.assertTrue(torch.isfinite(loss_aligned).item())
+        self.assertTrue(torch.isfinite(loss_swapped).item())
+        self.assertLess(
+            float(loss_aligned.detach()),
+            float(loss_swapped.detach()),
+        )
 
 
 if __name__ == "__main__":
