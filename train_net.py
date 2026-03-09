@@ -155,6 +155,7 @@ def train(
         frozen_backbone_bn,
         output_folder,
         metric=cfg.TEST.METRIC,
+        iter_per_epoch=iter_per_epoch,
     )
 
     return model

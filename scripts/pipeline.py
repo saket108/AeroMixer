@@ -357,7 +357,11 @@ def _build_train_cmd(
 
 def _resolve_eval_weight(output_dir: Path, explicit_weight: str | None) -> str:
     if explicit_weight:
-        return explicit_weight
+        # If it's already an absolute path, use it as-is
+        if os.path.isabs(explicit_weight):
+            return explicit_weight
+        # If it's a relative path, resolve it relative to the output_dir
+        return str(Path(output_dir) / explicit_weight)
     # test_net.py resolves MODEL.WEIGHT relative to OUTPUT_DIR when non-absolute.
     return "checkpoints/model_final.pth"
 
@@ -418,6 +422,13 @@ def _run_threshold_tuning(
     best = None
     best_map50 = float("-inf")
 
+    # Resolve the model weight to an absolute path before threshold sweeps
+    # This ensures all sweep runs use the same trained checkpoint
+    resolved_weight = _resolve_eval_weight(Path(output_dir), model_weight)
+    # If it's still a relative path, make it absolute relative to output_dir
+    if not os.path.isabs(resolved_weight):
+        resolved_weight = str(Path(output_dir) / resolved_weight)
+
     for thr in thresholds:
         sweep_dir = (
             Path(output_dir) / "threshold_sweeps" / f"score_thr_{_threshold_tag(thr)}"
@@ -434,7 +445,7 @@ def _run_threshold_tuning(
             preset=preset,
             num_workers=num_workers,
             disable_guardrails=disable_guardrails,
-            model_weight=model_weight,
+            model_weight=resolved_weight,
             tile_stitch_eval=tile_stitch_eval,
             tile_stitch_nms_iou=tile_stitch_nms_iou,
             tile_stitch_gt_dedup_iou=tile_stitch_gt_dedup_iou,

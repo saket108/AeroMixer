@@ -4,6 +4,7 @@ import numpy as np
 import torch
 
 from alphaction.dataset.datasets.evaluation.images.image_eval import (
+    _compute_detection_precision_recall,
     _prepare_for_image_ap,
 )
 
@@ -70,6 +71,32 @@ class TestImageEvalPostprocess(unittest.TestCase):
         det = results["img0.jpg"]
         self.assertEqual(det["boxes"].shape[0], 2)
         self.assertEqual(sorted(det["action_ids"].tolist()), [1, 2])
+
+    def test_detection_precision_recall_counts_tp_fp_fn(self):
+        results = {
+            "img0.jpg": {
+                "boxes": np.asarray(
+                    [[0.10, 0.10, 0.30, 0.30], [0.60, 0.60, 0.80, 0.80]],
+                    dtype=np.float32,
+                ),
+                "scores": np.asarray([0.95, 0.40], dtype=np.float32),
+                "action_ids": np.asarray([1, 1], dtype=np.int64),
+            }
+        }
+        targets = {
+            "img0.jpg": {
+                "bbox": np.asarray([[0.10, 0.10, 0.30, 0.30]], dtype=np.float32),
+                "labels": [1],
+                "resolution": (100, 100),
+            }
+        }
+
+        metrics = _compute_detection_precision_recall(results, targets, iou_thresh=0.5)
+        self.assertAlmostEqual(metrics["Detection/Precision@0.5IOU"], 0.5, places=6)
+        self.assertAlmostEqual(metrics["Detection/Recall@0.5IOU"], 1.0, places=6)
+        self.assertEqual(metrics["Detection/TP@0.5IOU"], 1)
+        self.assertEqual(metrics["Detection/FP@0.5IOU"], 1)
+        self.assertEqual(metrics["Detection/FN@0.5IOU"], 0)
 
 
 if __name__ == "__main__":

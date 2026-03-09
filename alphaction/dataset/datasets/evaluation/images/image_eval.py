@@ -55,7 +55,9 @@ def _pairwise_iou(box, boxes):
     h = np.clip(yy2 - yy1, a_min=0.0, a_max=None)
     inter = w * h
     area_a = max(0.0, (box[2] - box[0]) * (box[3] - box[1]))
-    area_b = np.clip((boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1]), a_min=0.0, a_max=None)
+    area_b = np.clip(
+        (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1]), a_min=0.0, a_max=None
+    )
     union = np.clip(area_a + area_b - inter, a_min=1e-6, a_max=None)
     return (inter / union).astype(np.float32)
 
@@ -83,7 +85,9 @@ def _dedupe_gt_xyxy(boxes, labels, iou_thresh):
     labels = np.asarray(labels, dtype=np.int64).reshape(-1)
     if boxes.shape[0] == 0:
         return boxes, labels
-    areas = np.clip((boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1]), a_min=0.0, a_max=None)
+    areas = np.clip(
+        (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1]), a_min=0.0, a_max=None
+    )
     keep_global = []
     for cls in np.unique(labels):
         cls_idx = np.where(labels == cls)[0]
@@ -165,7 +169,9 @@ def _stitch_tiled_predictions(results, targets, nms_iou=0.5, gt_dedup_iou=0.9):
         if group["gt_boxes_abs"]:
             gt_boxes_abs = np.concatenate(group["gt_boxes_abs"], axis=0)
             gt_labels = np.concatenate(group["gt_labels"], axis=0)
-            gt_boxes_abs, gt_labels = _dedupe_gt_xyxy(gt_boxes_abs, gt_labels, gt_dedup_iou)
+            gt_boxes_abs, gt_labels = _dedupe_gt_xyxy(
+                gt_boxes_abs, gt_labels, gt_dedup_iou
+            )
         else:
             gt_boxes_abs = np.zeros((0, 4), dtype=np.float32)
             gt_labels = np.zeros((0,), dtype=np.int64)
@@ -186,7 +192,9 @@ def _stitch_tiled_predictions(results, targets, nms_iou=0.5, gt_dedup_iou=0.9):
                 cls_idx = np.where(pred_labels == cls)[0]
                 if cls_idx.size == 0:
                     continue
-                keep_local = _nms_xyxy(pred_boxes_abs[cls_idx], pred_scores[cls_idx], nms_iou)
+                keep_local = _nms_xyxy(
+                    pred_boxes_abs[cls_idx], pred_scores[cls_idx], nms_iou
+                )
                 keep_idx_all.extend(cls_idx[keep_local].tolist())
 
             if keep_idx_all:
@@ -237,7 +245,11 @@ def _prepare_for_image_ap(predictions, dataset, score_thresh=0.0):
         image_key = _make_image_key(info["image_id"])
 
         boxes = prediction[0].numpy()
-        scores = torch.sigmoid(prediction[1]) if dataset.multilabel_action else F.softmax(prediction[1], dim=-1)
+        scores = (
+            torch.sigmoid(prediction[1])
+            if dataset.multilabel_action
+            else F.softmax(prediction[1], dim=-1)
+        )
         scores = scores.numpy()
         # Single-label detection heads should emit one class per query. Treating
         # softmax outputs as multi-label (np.where over all classes) creates
@@ -248,7 +260,11 @@ def _prepare_for_image_ap(predictions, dataset, score_thresh=0.0):
             box_ids = box_ids[valid_ids]
             class_ids = class_ids[valid_ids]
             if len(box_ids) == 0:
-                results[image_key] = {"boxes": np.zeros((0, 4)), "scores": np.array([]), "action_ids": np.array([])}
+                results[image_key] = {
+                    "boxes": np.zeros((0, 4)),
+                    "scores": np.array([]),
+                    "action_ids": np.array([]),
+                }
                 continue
             det_boxes = boxes[box_ids, :]
             det_scores = scores[box_ids, class_ids]
@@ -259,7 +275,11 @@ def _prepare_for_image_ap(predictions, dataset, score_thresh=0.0):
             best_scores = fg_scores[np.arange(fg_scores.shape[0]), class_ids]
             keep = best_scores >= float(score_thresh)
             if not np.any(keep):
-                results[image_key] = {"boxes": np.zeros((0, 4)), "scores": np.array([]), "action_ids": np.array([])}
+                results[image_key] = {
+                    "boxes": np.zeros((0, 4)),
+                    "scores": np.array([]),
+                    "action_ids": np.array([]),
+                }
                 continue
             det_boxes = boxes[keep, :]
             det_scores = best_scores[keep]
@@ -274,15 +294,17 @@ def _prepare_for_image_ap(predictions, dataset, score_thresh=0.0):
     return results, targets
 
 
-def _prepare_for_multimodal_image_ap(predictions, dataset, score_thresh=0.0, text_prompts=None):
+def _prepare_for_multimodal_image_ap(
+    predictions, dataset, score_thresh=0.0, text_prompts=None
+):
     """Prepare predictions for multimodal (image + text) evaluation.
-    
+
     Args:
         predictions: Model predictions
         dataset: Dataset object
         score_thresh: Score threshold
         text_prompts: Optional text prompts for open vocabulary evaluation
-        
+
     Returns:
         tuple: (results, targets)
     """
@@ -297,7 +319,7 @@ def _prepare_for_multimodal_image_ap(predictions, dataset, score_thresh=0.0, tex
             class_text_map = text_prompts
         elif isinstance(text_prompts, list):
             class_text_map = {i: text_prompts[i] for i in range(len(text_prompts))}
-    
+
     for sample_id, sample in enumerate(dataset.samples):
         info = dataset.get_sample_info(sample_id)
         image_key = _make_image_key(info["image_id"])
@@ -306,13 +328,15 @@ def _prepare_for_multimodal_image_ap(predictions, dataset, score_thresh=0.0, tex
             gt_boxes[:, [0, 2]] /= float(info["width"])
             gt_boxes[:, [1, 3]] /= float(info["height"])
         gt_labels = (sample["labels"] + 1).tolist()
-        
+
         # Add text prompts if available
         if class_text_map is not None:
-            gt_text_prompts = [class_text_map.get(label, f"class_{label}") for label in gt_labels]
+            gt_text_prompts = [
+                class_text_map.get(label, f"class_{label}") for label in gt_labels
+            ]
         else:
             gt_text_prompts = None
-        
+
         targets[image_key] = {
             "bbox": gt_boxes,
             "labels": gt_labels,
@@ -327,10 +351,14 @@ def _prepare_for_multimodal_image_ap(predictions, dataset, score_thresh=0.0, tex
         image_key = _make_image_key(info["image_id"])
 
         boxes = prediction[0].numpy()
-        
+
         # Handle different prediction formats
         if isinstance(prediction[1], torch.Tensor):
-            scores = torch.sigmoid(prediction[1]) if dataset.multilabel_action else F.softmax(prediction[1], dim=-1)
+            scores = (
+                torch.sigmoid(prediction[1])
+                if dataset.multilabel_action
+                else F.softmax(prediction[1], dim=-1)
+            )
             scores = scores.numpy()
         else:
             scores = prediction[1]
@@ -344,7 +372,7 @@ def _prepare_for_multimodal_image_ap(predictions, dataset, score_thresh=0.0, tex
                     "boxes": np.zeros((0, 4)),
                     "scores": np.array([]),
                     "action_ids": np.array([]),
-                    "text_prompts": np.array([])
+                    "text_prompts": np.array([]),
                 }
                 continue
             det_boxes = boxes[box_ids, :]
@@ -360,7 +388,7 @@ def _prepare_for_multimodal_image_ap(predictions, dataset, score_thresh=0.0, tex
                     "boxes": np.zeros((0, 4)),
                     "scores": np.array([]),
                     "action_ids": np.array([]),
-                    "text_prompts": np.array([])
+                    "text_prompts": np.array([]),
                 }
                 continue
             det_boxes = boxes[keep, :]
@@ -369,7 +397,10 @@ def _prepare_for_multimodal_image_ap(predictions, dataset, score_thresh=0.0, tex
 
         # Add text prompts for predictions
         if class_text_map is not None:
-            pred_text_prompts = [class_text_map.get(int(cid), f"class_{int(cid)}") for cid in det_class_ids]
+            pred_text_prompts = [
+                class_text_map.get(int(cid), f"class_{int(cid)}")
+                for cid in det_class_ids
+            ]
         else:
             pred_text_prompts = [f"class_{int(cid)}" for cid in det_class_ids]
 
@@ -387,8 +418,12 @@ def _box_area_pixels(boxes_norm, resolution):
     if boxes_norm is None or len(boxes_norm) == 0:
         return np.zeros((0,), dtype=np.float32)
     h, w = resolution
-    widths = np.clip(boxes_norm[:, 2] - boxes_norm[:, 0], a_min=0.0, a_max=None) * float(w)
-    heights = np.clip(boxes_norm[:, 3] - boxes_norm[:, 1], a_min=0.0, a_max=None) * float(h)
+    widths = np.clip(
+        boxes_norm[:, 2] - boxes_norm[:, 0], a_min=0.0, a_max=None
+    ) * float(w)
+    heights = np.clip(
+        boxes_norm[:, 3] - boxes_norm[:, 1], a_min=0.0, a_max=None
+    ) * float(h)
     return (widths * heights).astype(np.float32)
 
 
@@ -481,7 +516,9 @@ def _extract_map_at_iou(eval_res, iou):
 
     suffix = f"@{_format_iou(iou)}IOU"
     for key, value in eval_res.items():
-        if str(key).startswith("PascalBoxes_Precision/mAP@") and str(key).endswith(suffix):
+        if str(key).startswith("PascalBoxes_Precision/mAP@") and str(key).endswith(
+            suffix
+        ):
             try:
                 return float(value)
             except Exception:
@@ -529,7 +566,9 @@ def _compute_area_ap_breakdown(results, targets, dataset, logger):
     out = {}
 
     for name, area_min, area_max in area_bins:
-        det_bin, tgt_bin, num_gt, num_det = _filter_by_area(results, targets, area_min, area_max)
+        det_bin, tgt_bin, num_gt, num_det = _filter_by_area(
+            results, targets, area_min, area_max
+        )
         out[f"Area/{name}/num_gt"] = int(num_gt)
         out[f"Area/{name}/num_det"] = int(num_det)
 
@@ -551,32 +590,118 @@ def _compute_area_ap_breakdown(results, targets, dataset, logger):
             map_val = -1.0
         out[f"Area/{name}/mAP@{iou_value}IOU"] = map_val
 
-    out[f"SmallObject/AP@{iou_value}IOU"] = out.get(f"Area/small/mAP@{iou_value}IOU", -1.0)
+    out[f"SmallObject/AP@{iou_value}IOU"] = out.get(
+        f"Area/small/mAP@{iou_value}IOU", -1.0
+    )
     return out
 
 
-def evaluate_with_text_prompts(predictions, dataset, text_prompts, output_folder=None, logger=None):
+def _compute_detection_precision_recall(results, targets, iou_thresh):
+    pred_items = []
+    gt_lookup = {}
+    total_gt = 0
+
+    for image_key, target in targets.items():
+        gt_boxes = np.asarray(target.get("bbox", []), dtype=np.float32).reshape(-1, 4)
+        gt_labels = np.asarray(target.get("labels", []), dtype=np.int64).reshape(-1)
+        if gt_boxes.shape[0] == 0:
+            gt_lookup[image_key] = {
+                "boxes": gt_boxes,
+                "labels": gt_labels,
+                "matched": np.zeros((0,), dtype=bool),
+            }
+            continue
+        gt_lookup[image_key] = {
+            "boxes": gt_boxes,
+            "labels": gt_labels,
+            "matched": np.zeros((gt_boxes.shape[0],), dtype=bool),
+        }
+        total_gt += int(gt_boxes.shape[0])
+
+    for image_key, det in results.items():
+        det_boxes = np.asarray(det.get("boxes", []), dtype=np.float32).reshape(-1, 4)
+        det_scores = np.asarray(det.get("scores", []), dtype=np.float32).reshape(-1)
+        det_labels = np.asarray(det.get("action_ids", []), dtype=np.int64).reshape(-1)
+        count = min(det_boxes.shape[0], det_scores.shape[0], det_labels.shape[0])
+        for idx in range(count):
+            pred_items.append(
+                (
+                    float(det_scores[idx]),
+                    str(image_key),
+                    int(det_labels[idx]),
+                    det_boxes[idx],
+                )
+            )
+
+    pred_items.sort(key=lambda item: item[0], reverse=True)
+
+    tp = 0
+    fp = 0
+
+    for _score, image_key, det_label, det_box in pred_items:
+        gt_info = gt_lookup.get(image_key)
+        if gt_info is None or gt_info["boxes"].shape[0] == 0:
+            fp += 1
+            continue
+
+        label_mask = gt_info["labels"] == int(det_label)
+        candidate_idx = np.where(label_mask & (~gt_info["matched"]))[0]
+        if candidate_idx.size == 0:
+            fp += 1
+            continue
+
+        ious = _pairwise_iou(det_box, gt_info["boxes"][candidate_idx])
+        if ious.size == 0:
+            fp += 1
+            continue
+
+        best_local = int(np.argmax(ious))
+        best_iou = float(ious[best_local])
+        if best_iou >= float(iou_thresh):
+            gt_info["matched"][candidate_idx[best_local]] = True
+            tp += 1
+        else:
+            fp += 1
+
+    fn = max(0, int(total_gt - tp))
+    precision = float(tp) / float(tp + fp) if (tp + fp) > 0 else 0.0
+    recall = float(tp) / float(total_gt) if total_gt > 0 else 0.0
+    return {
+        f"Detection/Precision@{_format_iou(iou_thresh)}IOU": float(precision),
+        f"Detection/Recall@{_format_iou(iou_thresh)}IOU": float(recall),
+        f"Detection/TP@{_format_iou(iou_thresh)}IOU": int(tp),
+        f"Detection/FP@{_format_iou(iou_thresh)}IOU": int(fp),
+        f"Detection/FN@{_format_iou(iou_thresh)}IOU": int(fn),
+    }
+
+
+def evaluate_with_text_prompts(
+    predictions, dataset, text_prompts, output_folder=None, logger=None
+):
     """Evaluate predictions with text prompts for open vocabulary detection.
-    
+
     Args:
         predictions: Model predictions
         dataset: Dataset object
         text_prompts: Dict or list of text prompts for each class
         output_folder: Folder to save results
         logger: Logger object
-        
+
     Returns:
         dict: Evaluation results
     """
     if logger is None:
         import logging
+
         logger = logging.getLogger("alphaction.image_eval")
-    
+
     logger.info("Evaluating with text prompts for open vocabulary detection.")
-    
+
     # Prepare predictions with text prompts
-    results, targets = _prepare_for_multimodal_image_ap(predictions, dataset, text_prompts=text_prompts)
-    
+    results, targets = _prepare_for_multimodal_image_ap(
+        predictions, dataset, text_prompts=text_prompts
+    )
+
     # Evaluate
     eval_res = frame_mAP_pascal(
         results,
@@ -585,55 +710,59 @@ def evaluate_with_text_prompts(predictions, dataset, text_prompts, output_folder
         logger,
         iou_list=[dataset.test_iou_thresh],
     )
-    
+
     if output_folder:
         os.makedirs(output_folder, exist_ok=True)
         log_file_path = os.path.join(output_folder, "result_multimodal.log")
         with open(log_file_path, "w") as logf:
             logf.write("Evaluation results (multimodal with text prompts)\n")
             logf.write(pformat(eval_res))
-    
+
     return eval_res, results
 
 
 def compute_text_similarity_scores(predictions, text_features, class_names=None):
     """Compute text similarity scores for predictions.
-    
+
     Args:
         predictions: Model predictions (boxes, scores)
         text_features: Text features from CLIP text encoder
         class_names: Optional class names for mapping
-        
+
     Returns:
         numpy.ndarray: Updated scores with text similarity
     """
     if not isinstance(predictions, (list, tuple)) or len(predictions) < 2:
         return predictions
-    
+
     boxes = predictions[0]
     scores = predictions[1]
-    
+
     if isinstance(scores, torch.Tensor):
         scores = scores.numpy()
-    
+
     # If text features provided, use them to refine scores
     if text_features is not None and len(text_features) > 0:
         if isinstance(text_features, torch.Tensor):
             text_features = text_features.cpu().numpy()
-        
+
         # Compute similarity between image features and text features
         # This is a placeholder - actual implementation depends on model architecture
         text_sim = np.dot(scores, text_features.T)
         scores = scores * 0.7 + text_sim * 0.3  # Combine
-    
+
     return boxes, scores
 
 
-def do_image_evaluation(dataset, predictions, output_folder, logger, metric="image_ap", save_csv=False):
+def do_image_evaluation(
+    dataset, predictions, output_folder, logger, metric="image_ap", save_csv=False
+):
     del save_csv  # not used for image evaluation
     eval_metric = metric.lower()
     if eval_metric not in ["image_ap", "frame_ap"]:
-        raise NotImplementedError("Unsupported metric '{}' for ImageDataset.".format(metric))
+        raise NotImplementedError(
+            "Unsupported metric '{}' for ImageDataset.".format(metric)
+        )
 
     logger.info("Preparing image results for {} evaluation.".format(eval_metric))
     results, targets = _prepare_for_image_ap(predictions, dataset)
@@ -644,11 +773,13 @@ def do_image_evaluation(dataset, predictions, output_folder, logger, metric="ima
     if stitch_eval:
         stitch_nms_iou = float(getattr(test_cfg, "TILE_STITCH_NMS_IOU", 0.5))
         stitch_gt_dedup_iou = float(getattr(test_cfg, "TILE_STITCH_GT_DEDUP_IOU", 0.9))
-        stitched_results, stitched_targets, tile_keys, stitched_images = _stitch_tiled_predictions(
-            results,
-            targets,
-            nms_iou=stitch_nms_iou,
-            gt_dedup_iou=stitch_gt_dedup_iou,
+        stitched_results, stitched_targets, tile_keys, stitched_images = (
+            _stitch_tiled_predictions(
+                results,
+                targets,
+                nms_iou=stitch_nms_iou,
+                gt_dedup_iou=stitch_gt_dedup_iou,
+            )
         )
         if stitched_results is not None and stitched_targets is not None:
             results, targets = stitched_results, stitched_targets
@@ -675,8 +806,15 @@ def do_image_evaluation(dataset, predictions, output_folder, logger, metric="ima
     )
     eval_res = _maybe_add_ap5095_metrics(dataset, results, targets, eval_res, logger)
     eval_res.update(_compute_area_ap_breakdown(results, targets, dataset, logger))
+    eval_res.update(
+        _compute_detection_precision_recall(
+            results, targets, iou_thresh=float(dataset.test_iou_thresh)
+        )
+    )
 
-    logger.info("Evaluation results ({}):\n{}".format(eval_metric, pformat(eval_res, indent=2)))
+    logger.info(
+        "Evaluation results ({}):\n{}".format(eval_metric, pformat(eval_res, indent=2))
+    )
     if output_folder:
         os.makedirs(output_folder, exist_ok=True)
         log_file_path = os.path.join(output_folder, "result_image.log")
@@ -687,10 +825,17 @@ def do_image_evaluation(dataset, predictions, output_folder, logger, metric="ima
     return eval_res, results
 
 
-def do_multimodal_image_evaluation(dataset, predictions, output_folder, logger, metric="image_ap", 
-                                   text_prompts=None, save_csv=False):
+def do_multimodal_image_evaluation(
+    dataset,
+    predictions,
+    output_folder,
+    logger,
+    metric="image_ap",
+    text_prompts=None,
+    save_csv=False,
+):
     """Perform multimodal (image + text) evaluation.
-    
+
     Args:
         dataset: Dataset object
         predictions: Model predictions
@@ -699,24 +844,30 @@ def do_multimodal_image_evaluation(dataset, predictions, output_folder, logger, 
         metric: Evaluation metric
         text_prompts: Text prompts for open vocabulary detection
         save_csv: Whether to save CSV
-        
+
     Returns:
         tuple: (eval_res, results)
     """
     del save_csv  # not used for image evaluation
-    
+
     eval_metric = metric.lower()
     if eval_metric not in ["image_ap", "frame_ap"]:
-        raise NotImplementedError("Unsupported metric '{}' for ImageDataset.".format(metric))
+        raise NotImplementedError(
+            "Unsupported metric '{}' for ImageDataset.".format(metric)
+        )
 
-    logger.info("Preparing multimodal image results for {} evaluation.".format(eval_metric))
-    
+    logger.info(
+        "Preparing multimodal image results for {} evaluation.".format(eval_metric)
+    )
+
     # Use text prompts if provided
     if text_prompts is not None:
-        results, targets = _prepare_for_multimodal_image_ap(predictions, dataset, text_prompts=text_prompts)
+        results, targets = _prepare_for_multimodal_image_ap(
+            predictions, dataset, text_prompts=text_prompts
+        )
     else:
         results, targets = _prepare_for_image_ap(predictions, dataset)
-    
+
     eval_res = frame_mAP_pascal(
         results,
         targets,
@@ -726,13 +877,24 @@ def do_multimodal_image_evaluation(dataset, predictions, output_folder, logger, 
     )
     eval_res = _maybe_add_ap5095_metrics(dataset, results, targets, eval_res, logger)
     eval_res.update(_compute_area_ap_breakdown(results, targets, dataset, logger))
+    eval_res.update(
+        _compute_detection_precision_recall(
+            results, targets, iou_thresh=float(dataset.test_iou_thresh)
+        )
+    )
 
-    logger.info("Multimodal evaluation results ({}):\n{}".format(eval_metric, pformat(eval_res, indent=2)))
+    logger.info(
+        "Multimodal evaluation results ({}):\n{}".format(
+            eval_metric, pformat(eval_res, indent=2)
+        )
+    )
     if output_folder:
         os.makedirs(output_folder, exist_ok=True)
         log_file_path = os.path.join(output_folder, "result_multimodal_image.log")
         with open(log_file_path, "w") as logf:
-            logf.write("Multimodal evaluation results (metric: {})\n".format(eval_metric))
+            logf.write(
+                "Multimodal evaluation results (metric: {})\n".format(eval_metric)
+            )
             logf.write(pformat(eval_res))
 
     return eval_res, results
