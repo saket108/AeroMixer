@@ -336,6 +336,7 @@ def _build_train_cmd(
     disable_guardrails: bool,
     skip_val_in_train: bool,
     skip_final_test: bool,
+    resume: bool,
     extra_opts: list[str],
 ) -> list[str]:
     cmd = [python_exe, "train_net.py", "--config-file", config_file]
@@ -343,6 +344,8 @@ def _build_train_cmd(
         cmd.append("--skip-val-in-train")
     if skip_final_test:
         cmd.append("--skip-final-test")
+    if resume:
+        cmd.append("--resume")
     opts = _build_common_opts(plan, output_dir, num_workers, preset, disable_guardrails)
     opts.extend(
         [
@@ -579,6 +582,11 @@ def _parse_args() -> argparse.Namespace:
         help="When training, skip train_net.py final test and leave testing to eval mode.",
     )
     p.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume training from OUTPUT_DIR/checkpoints/last_checkpoint.",
+    )
+    p.add_argument(
         "--disable-guardrails",
         action="store_true",
         help="Disable preset guardrails (advanced). In prod preset, guardrails are enabled by default.",
@@ -708,6 +716,7 @@ def main() -> int:
         "allow_validation_errors": bool(args.allow_validation_errors),
         "skip_val_in_train": bool(args.skip_val_in_train),
         "skip_final_test": bool(args.skip_final_test),
+        "resume": bool(args.resume),
         "guardrails_enabled": bool(
             args.preset == "prod" and not args.disable_guardrails
         ),
@@ -734,6 +743,7 @@ def main() -> int:
         disable_guardrails=args.disable_guardrails,
         skip_val_in_train=args.skip_val_in_train,
         skip_final_test=args.skip_final_test,
+        resume=args.resume,
         extra_opts=list(args.extra_opts),
     )
     eval_cmd = _build_eval_cmd(

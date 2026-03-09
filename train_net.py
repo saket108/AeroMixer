@@ -3,6 +3,7 @@ Basic training script for PyTorch
 """
 
 import argparse
+import logging
 import os
 
 import torch
@@ -39,6 +40,7 @@ def train(
     adjust_lr=False,
     skip_val=False,
     no_head=False,
+    resume=False,
 ):
     # build the model.
     model = build_detection_model(cfg)
@@ -88,12 +90,21 @@ def train(
         topk=int(getattr(cfg.SOLVER, "CHECKPOINT_TOPK", 1)),
     )
     ckpt_file = os.path.join(output_dir, cfg.MODEL.WEIGHT) if cfg.MODEL.WEIGHT else None
-    extra_checkpoint_data = checkpointer.load(
-        ckpt_file,
-        model_weight_only=transfer_weight,
-        adjust_scheduler=adjust_lr,
-        no_head=no_head,
-    )
+    if resume or ckpt_file:
+        extra_checkpoint_data = checkpointer.load(
+            ckpt_file,
+            model_weight_only=transfer_weight,
+            adjust_scheduler=adjust_lr,
+            no_head=no_head,
+        )
+    else:
+        if checkpointer.has_checkpoint():
+            logger = logging.getLogger("alphaction.train")
+            logger.info(
+                "Found an existing checkpoint in %s but resume is disabled; starting a fresh run.",
+                checkpointer.save_dir,
+            )
+        extra_checkpoint_data = {}
     arguments.update(extra_checkpoint_data)
 
     if uses_text_branch(cfg):
@@ -237,6 +248,11 @@ def main():
         action="store_true",
     )
     parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from the last checkpoint in OUTPUT_DIR/checkpoints.",
+    )
+    parser.add_argument(
         "--no-head",
         dest="no_head",
         help="Not load the head layer parameters from weight file",
@@ -345,6 +361,7 @@ def main():
         args.adjust_lr,
         args.skip_val,
         args.no_head,
+        args.resume,
     )
 
     if tblogger is not None:

@@ -29,11 +29,34 @@ class TestAeroWrapper(unittest.TestCase):
                 tile_min_cover=0.35,
                 tune_thresholds=False,
                 skip_val_in_train=False,
+                resume=False,
                 extra_opts=[],
             )
             cmd = aero_wrapper._build_pipeline_command(args, mode="train")
             self.assertIn("--skip-final-test", cmd)
             self.assertIn("--epochs", cmd)
+            self.assertNotIn("--resume", cmd)
+
+    def test_train_command_only_resumes_when_requested(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dataset = Path(tmp_dir)
+            args = SimpleNamespace(
+                data=str(dataset),
+                preset="prod",
+                output_dir="output/aero_train",
+                epochs=30,
+                batch_size=2,
+                num_workers=0,
+                tile_size=640,
+                tile_overlap=0.25,
+                tile_min_cover=0.35,
+                tune_thresholds=False,
+                skip_val_in_train=False,
+                resume=True,
+                extra_opts=[],
+            )
+            cmd = aero_wrapper._build_pipeline_command(args, mode="train")
+            self.assertIn("--resume", cmd)
 
     def test_eval_command_does_not_include_epochs(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -49,6 +72,7 @@ class TestAeroWrapper(unittest.TestCase):
                 tile_min_cover=0.35,
                 tune_thresholds=True,
                 threshold_grid="0.05,0.1,0.2,0.3",
+                resume=False,
                 extra_opts=[],
             )
             cmd = aero_wrapper._build_pipeline_command(args, mode="eval")

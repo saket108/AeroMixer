@@ -82,6 +82,8 @@ def _build_pipeline_command(args, mode):
         )
     if getattr(args, "skip_val_in_train", False):
         command.append("--skip-val-in-train")
+    if getattr(args, "resume", False):
+        command.append("--resume")
     if str(mode) == "train":
         command.append("--skip-final-test")
     if getattr(args, "extra_opts", None):
@@ -141,6 +143,7 @@ def _parse_args():
     smoke.add_argument("--tile-overlap", type=float, default=0.25)
     smoke.add_argument("--tile-min-cover", type=float, default=0.35)
     smoke.add_argument("--skip-val-in-train", action="store_true")
+    smoke.add_argument("--resume", action="store_true")
     smoke.add_argument("--extra-opts", nargs=argparse.REMAINDER, default=[])
 
     train = sub.add_parser(
@@ -156,6 +159,7 @@ def _parse_args():
     train.add_argument("--tile-overlap", type=float, default=0.25)
     train.add_argument("--tile-min-cover", type=float, default=0.35)
     train.add_argument("--skip-val-in-train", action="store_true")
+    train.add_argument("--resume", action="store_true")
     train.add_argument("--extra-opts", nargs=argparse.REMAINDER, default=[])
 
     eval_parser = sub.add_parser(
