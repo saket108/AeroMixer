@@ -42,12 +42,12 @@ def _run(command):
     subprocess.run(command, cwd=str(ROOT), check=True)
 
 
-def _build_pipeline_command(args):
+def _build_pipeline_command(args, mode):
     command = [
         sys.executable,
         str(ROOT / "scripts" / "pipeline.py"),
         "--mode",
-        "run",
+        str(mode),
         "--data",
         _require_dataset(args.data),
         "--preset",
@@ -62,7 +62,7 @@ def _build_pipeline_command(args):
         str(args.num_workers),
     ]
 
-    if int(args.tile_size) > 0:
+    if hasattr(args, "tile_size") and int(args.tile_size) > 0:
         command.extend(
             [
                 "--tile-size",
@@ -73,7 +73,7 @@ def _build_pipeline_command(args):
                 str(args.tile_min_cover),
             ]
         )
-    if args.tune_thresholds:
+    if getattr(args, "tune_thresholds", False):
         command.extend(
             [
                 "--tune-thresholds",
@@ -81,6 +81,10 @@ def _build_pipeline_command(args):
                 args.threshold_grid,
             ]
         )
+    if getattr(args, "skip_val_in_train", False):
+        command.append("--skip-val-in-train")
+    if getattr(args, "extra_opts", None):
+        command.extend(["--extra-opts", *args.extra_opts])
     return command
 
 
@@ -121,7 +125,7 @@ def _build_visualize_command(args):
 
 def _parse_args():
     parser = argparse.ArgumentParser(
-        description="Simple AeroMixer wrapper: smoke, train, or visualize."
+        description="Simple AeroMixer wrapper: smoke, train, eval, or visualize."
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -135,10 +139,10 @@ def _parse_args():
     smoke.add_argument("--tile-size", type=int, default=0)
     smoke.add_argument("--tile-overlap", type=float, default=0.25)
     smoke.add_argument("--tile-min-cover", type=float, default=0.35)
-    smoke.add_argument("--tune-thresholds", action="store_true")
-    smoke.add_argument("--threshold-grid", default="0.05,0.1,0.2,0.3")
+    smoke.add_argument("--skip-val-in-train", action="store_true")
+    smoke.add_argument("--extra-opts", nargs=argparse.REMAINDER, default=[])
 
-    train = sub.add_parser("train", help="Main AeroMixer training run.")
+    train = sub.add_parser("train", help="Main training run with epoch validation only.")
     train.add_argument("--data", default=_default_dataset())
     train.add_argument("--preset", choices=["lite", "full", "prod"], default="prod")
     train.add_argument("--output-dir", default="output/aero_train")
@@ -148,12 +152,29 @@ def _parse_args():
     train.add_argument("--tile-size", type=int, default=640)
     train.add_argument("--tile-overlap", type=float, default=0.25)
     train.add_argument("--tile-min-cover", type=float, default=0.35)
-    train.add_argument("--tune-thresholds", dest="tune_thresholds", action="store_true")
-    train.add_argument(
+    train.add_argument("--skip-val-in-train", action="store_true")
+    train.add_argument("--extra-opts", nargs=argparse.REMAINDER, default=[])
+
+    eval_parser = sub.add_parser(
+        "eval", help="Final test evaluation for an existing training output."
+    )
+    eval_parser.add_argument("--data", default=_default_dataset())
+    eval_parser.add_argument(
+        "--preset", choices=["lite", "full", "prod"], default="prod"
+    )
+    eval_parser.add_argument("--output-dir", default="output/aero_train")
+    eval_parser.add_argument("--batch-size", type=int, default=2)
+    eval_parser.add_argument("--num-workers", type=int, default=_default_workers())
+    eval_parser.add_argument("--tile-size", type=int, default=640)
+    eval_parser.add_argument("--tile-overlap", type=float, default=0.25)
+    eval_parser.add_argument("--tile-min-cover", type=float, default=0.35)
+    eval_parser.add_argument("--tune-thresholds", dest="tune_thresholds", action="store_true")
+    eval_parser.add_argument(
         "--no-tune-thresholds", dest="tune_thresholds", action="store_false"
     )
-    train.set_defaults(tune_thresholds=True)
-    train.add_argument("--threshold-grid", default="0.05,0.1,0.2,0.3")
+    eval_parser.set_defaults(tune_thresholds=True)
+    eval_parser.add_argument("--threshold-grid", default="0.05,0.1,0.2,0.3")
+    eval_parser.add_argument("--extra-opts", nargs=argparse.REMAINDER, default=[])
 
     vis = sub.add_parser("vis", help="Visualize one image with boxes and JSON text.")
     vis.add_argument("--data", default=_default_dataset())
@@ -170,8 +191,14 @@ def _parse_args():
 
 def main():
     args = _parse_args()
-    if args.command in {"smoke", "train"}:
-        _run(_build_pipeline_command(args))
+    if args.command == "smoke":
+        _run(_build_pipeline_command(args, mode="train"))
+        return
+    if args.command == "train":
+        _run(_build_pipeline_command(args, mode="train"))
+        return
+    if args.command == "eval":
+        _run(_build_pipeline_command(args, mode="eval"))
         return
     if args.command == "vis":
         _run(_build_visualize_command(args))

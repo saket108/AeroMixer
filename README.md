@@ -21,6 +21,8 @@ If you want the least confusing path, use only `scripts/aero.py`:
   - `python scripts/aero.py smoke`
 - Main training run:
   - `python scripts/aero.py train`
+- Final test evaluation:
+  - `python scripts/aero.py eval`
 - Visualize one image:
   - `python scripts/aero.py vis --image "C:\path\to\image.jpg"`
 

@@ -4,12 +4,14 @@ Most users should use only one wrapper:
 - `aero.py`
   - `python scripts/aero.py smoke`
   - `python scripts/aero.py train`
+  - `python scripts/aero.py eval`
   - `python scripts/aero.py vis --image ...`
 
 ## Public entrypoints (use these)
 - `aero.py`: simplified wrapper around the active workflow
   - `smoke`: 1-epoch health check
-  - `train`: main AeroMixer training command
+  - `train`: main AeroMixer training command with epoch validation only
+  - `eval`: final test evaluation and optional threshold sweep
   - `vis`: one-image prediction with JSON descriptions
 - `pipeline.py`: one-command professional pipeline (`prepare -> train -> eval`)
   - Presets: `lite`, `full`, `prod`
