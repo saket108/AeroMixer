@@ -119,6 +119,7 @@ _C.DATALOADER.BALANCED_SAMPLING = False
 _C.DATALOADER.BALANCED_SAMPLING_POWER = 0.75
 _C.DATALOADER.BALANCED_SAMPLING_MIN_COUNT = 1.0
 _C.DATALOADER.BALANCED_SAMPLING_EMPTY_WEIGHT = 0.25
+_C.DATALOADER.TILE_GROUP_BATCHING = False
 # If True, each batch should contain only images for which the aspect ratio
 # is compatible. This groups portrait images together, and landscape images
 # are not batched with portrait images.

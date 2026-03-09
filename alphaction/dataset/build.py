@@ -70,6 +70,36 @@ def _compute_balanced_image_weights(dataset, cfg):
     return image_weights, class_hist
 
 
+def _compute_tile_group_ids(dataset):
+    samples = getattr(dataset, "samples", None)
+    if not isinstance(samples, list) or len(samples) == 0:
+        return None, 0
+
+    group_ids = []
+    group_lookup = {}
+    next_group_id = 0
+    tiled_samples = 0
+
+    for sample_idx, sample in enumerate(samples):
+        tile_meta = sample.get("tile_meta") if isinstance(sample, dict) else None
+        base_id = None
+        if isinstance(tile_meta, dict) and bool(tile_meta.get("is_tiled", False)):
+            base_id = str(tile_meta.get("base_image_id", "")).strip() or None
+        if base_id is not None:
+            tiled_samples += 1
+            if base_id not in group_lookup:
+                group_lookup[base_id] = next_group_id
+                next_group_id += 1
+            group_ids.append(group_lookup[base_id])
+        else:
+            group_ids.append(next_group_id)
+            next_group_id += 1
+
+    if tiled_samples <= 1:
+        return None, tiled_samples
+    return group_ids, tiled_samples
+
+
 def make_data_sampler(dataset, shuffle, distributed, cfg=None, is_train=False):
     if distributed:
         if (
@@ -111,12 +141,55 @@ def make_data_sampler(dataset, shuffle, distributed, cfg=None, is_train=False):
         return torch.utils.data.SequentialSampler(dataset)
 
 
-def make_batch_data_sampler(dataset, sampler, samples_per_gpu, num_iters=None, start_iter=0, drop_last=False):
-    batch_sampler = torch.utils.data.BatchSampler(
-        sampler,
-        samples_per_gpu,
-        drop_last=drop_last
+def make_batch_data_sampler(
+    dataset,
+    sampler,
+    samples_per_gpu,
+    num_iters=None,
+    start_iter=0,
+    drop_last=False,
+    cfg=None,
+):
+    use_tile_grouping = bool(
+        cfg is not None and getattr(cfg.DATALOADER, "TILE_GROUP_BATCHING", False)
     )
+    batch_sampler = None
+
+    if use_tile_grouping:
+        group_ids, tiled_samples = _compute_tile_group_ids(dataset)
+        if group_ids is None:
+            if tiled_samples > 0:
+                logger.info(
+                    "DATALOADER.TILE_GROUP_BATCHING enabled but insufficient tiled samples were found; "
+                    "falling back to standard batching."
+                )
+        elif isinstance(sampler, torch.utils.data.WeightedRandomSampler):
+            logger.warning(
+                "DATALOADER.TILE_GROUP_BATCHING is enabled but WeightedRandomSampler is active; "
+                "falling back to standard batching. Disable BALANCED_SAMPLING to activate tile grouping."
+            )
+        else:
+            from . import samplers
+
+            logger.info(
+                "Using GroupedBatchSampler for tile-aware batching "
+                "(tiled_samples=%d, batch_size=%d).",
+                int(tiled_samples),
+                int(samples_per_gpu),
+            )
+            batch_sampler = samplers.GroupedBatchSampler(
+                sampler,
+                group_ids=group_ids,
+                batch_size=samples_per_gpu,
+                drop_uneven=drop_last,
+            )
+
+    if batch_sampler is None:
+        batch_sampler = torch.utils.data.BatchSampler(
+            sampler,
+            samples_per_gpu,
+            drop_last=drop_last
+        )
 
     if num_iters is not None:
         from . import samplers
@@ -157,14 +230,6 @@ def make_data_loader(cfg, is_train=True, is_distributed=False, start_iter=0):
     iter_per_epoch_all = []
 
     for dataset in datasets:
-
-        if is_train:
-            iter_per_epoch = len(dataset) // images_per_batch
-            iter_per_epoch_all.append(iter_per_epoch)
-            num_iters = cfg.SOLVER.MAX_EPOCH * iter_per_epoch
-        else:
-            num_iters = None
-
         sampler = make_data_sampler(
             dataset,
             shuffle,
@@ -173,13 +238,31 @@ def make_data_loader(cfg, is_train=True, is_distributed=False, start_iter=0):
             is_train=is_train,
         )
 
+        base_batch_sampler = make_batch_data_sampler(
+            dataset,
+            sampler,
+            images_per_gpu,
+            num_iters=None,
+            start_iter=start_iter,
+            drop_last=drop_last,
+            cfg=cfg,
+        )
+
+        if is_train:
+            iter_per_epoch = max(1, len(base_batch_sampler))
+            iter_per_epoch_all.append(iter_per_epoch)
+            num_iters = cfg.SOLVER.MAX_EPOCH * iter_per_epoch
+        else:
+            num_iters = None
+
         batch_sampler = make_batch_data_sampler(
             dataset,
             sampler,
             images_per_gpu,
             num_iters,
             start_iter,
-            drop_last
+            drop_last,
+            cfg=cfg,
         )
 
         collator = BatchCollator(cfg.DATALOADER.SIZE_DIVISIBILITY)
