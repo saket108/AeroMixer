@@ -43,6 +43,9 @@ class TestCliHelpSmoke(unittest.TestCase):
     def test_pipeline_help(self):
         self._run_help("scripts/pipeline.py")
 
+    def test_aero_wrapper_help(self):
+        self._run_help("scripts/aero.py")
+
     def test_validate_dataset_help(self):
         self._run_help("scripts/validate_dataset.py")
 

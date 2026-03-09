@@ -13,6 +13,22 @@ This README documents the active production path, not the older video research h
 - Primary runtime entrypoints are `scripts/pipeline.py`, `scripts/validate_dataset.py`, `train_net.py`, `test_net.py`, and `demo_image.py`.
 - Detector class counts are auto-synced from the dataset path at runtime; the active presets are not locked to a fixed class list.
 
+## Simplest Workflow
+
+If you want the least confusing path, use only `scripts/aero.py`:
+
+- Health check:
+  - `python scripts/aero.py smoke`
+- Main training run:
+  - `python scripts/aero.py train`
+- Visualize one image:
+  - `python scripts/aero.py vis --image "C:\path\to\image.jpg"`
+
+For the local Windows setup, this wrapper defaults to:
+- dataset: `C:/Users/tsake/OneDrive/Desktop/datasets/Aero_dataset`
+- smoke output: `output/aero_smoke`
+- train output: `output/aero_train`
+
 ## Model Overview
 
 Supported detector (`MODEL.DET: AeroLiteDetector`) is:

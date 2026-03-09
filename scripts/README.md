@@ -1,6 +1,16 @@
 # Scripts Layout
 
+Most users should use only one wrapper:
+- `aero.py`
+  - `python scripts/aero.py smoke`
+  - `python scripts/aero.py train`
+  - `python scripts/aero.py vis --image ...`
+
 ## Public entrypoints (use these)
+- `aero.py`: simplified wrapper around the active workflow
+  - `smoke`: 1-epoch health check
+  - `train`: main AeroMixer training command
+  - `vis`: one-image prediction with JSON descriptions
 - `pipeline.py`: one-command professional pipeline (`prepare -> train -> eval`)
   - Presets: `lite`, `full`, `prod`
   - `prod` enables detector-only guardrails by default
