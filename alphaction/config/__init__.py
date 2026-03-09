@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from .defaults import _C as cfg
 
 
@@ -53,6 +55,154 @@ def get_text_config(config):
     return getattr(config.DATA, "TEXT", None)
 
 
+def _find_dataset_yaml(root: Path):
+    for name in ("data.yaml", "dataset.yaml"):
+        path = root / name
+        if path.is_file():
+            return path
+    return None
+
+
+def _load_dataset_yaml_names(yaml_path: Path):
+    try:
+        import yaml
+    except Exception:
+        return None
+
+    try:
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception:
+        return None
+
+    names = data.get("names", None)
+    if isinstance(names, list):
+        return [str(name) for name in names]
+    if isinstance(names, dict):
+        try:
+            items = sorted(
+                ((int(key), value) for key, value in names.items()),
+                key=lambda item: item[0],
+            )
+        except Exception:
+            items = list(names.items())
+        return [str(value) for _, value in items]
+
+    nc = data.get("nc", None)
+    if isinstance(nc, int) and nc > 0:
+        return [f"class_{idx}" for idx in range(int(nc))]
+    return None
+
+
+def _count_yolo_label_classes(labels_root: Path):
+    if not labels_root.is_dir():
+        return None
+
+    max_id = -1
+    for txt in sorted(labels_root.rglob("*.txt")):
+        try:
+            with open(txt, "r", encoding="utf-8") as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) < 5:
+                        continue
+                    cls = int(float(parts[0]))
+                    if cls > max_id:
+                        max_id = cls
+        except Exception:
+            continue
+
+    if max_id < 0:
+        return None
+    return max_id + 1
+
+
+def infer_dataset_class_metadata(config):
+    """Best-effort class metadata inference from the configured dataset path."""
+
+    data_dir = str(getattr(config.DATA, "PATH_TO_DATA_DIR", "")).strip()
+    if not data_dir:
+        return None
+    root = Path(data_dir)
+    if not root.exists():
+        return None
+
+    yaml_path = _find_dataset_yaml(root)
+    class_names = _load_dataset_yaml_names(yaml_path) if yaml_path is not None else None
+
+    label_roots = [
+        root / "labels" / "train",
+        root / "labels" / "val",
+        root / "labels" / "valid",
+        root / "labels" / "test",
+        root / "train" / "labels",
+        root / "val" / "labels",
+        root / "valid" / "labels",
+        root / "test" / "labels",
+        root / "labels",
+    ]
+    for label_root in label_roots:
+        label_count = _count_yolo_label_classes(label_root)
+        if label_count is None and not class_names:
+            continue
+        class_count = int(len(class_names)) if class_names else int(label_count)
+        if class_names and len(class_names) < class_count:
+            class_names = class_names + [
+                f"class_{idx}" for idx in range(len(class_names), class_count)
+            ]
+        if not class_names:
+            class_names = [f"class_{idx}" for idx in range(class_count)]
+        return {
+            "split": label_root.parent.name if label_root.parent != root else "dataset",
+            "num_classes": int(class_count),
+            "class_names": list(class_names),
+        }
+
+    try:
+        from alphaction.dataset.datasets.image_dataset import ImageDataset
+    except Exception:
+        return None
+
+    for split in ("train", "val", "test"):
+        try:
+            dataset = ImageDataset(config, split)
+        except Exception:
+            continue
+
+        class_count = max(1, int(getattr(dataset, "num_classes", 0)))
+        class_names = list(getattr(dataset, "class_names", []))
+        return {
+            "split": split,
+            "num_classes": class_count,
+            "class_names": class_names,
+        }
+
+    return None
+
+
+def auto_sync_dataset_class_counts(config):
+    """Align detector class counts to the configured dataset when possible."""
+
+    if not bool(getattr(config.DATA, "AUTO_SYNC_CLASS_COUNTS", True)):
+        return None
+
+    metadata = infer_dataset_class_metadata(config)
+    if metadata is None:
+        return None
+
+    class_count = int(metadata["num_classes"])
+    changed = {}
+    for field in ("ACTION_CLASSES", "OBJECT_CLASSES", "NUM_ACT", "NUM_CLS"):
+        current = int(getattr(config.MODEL.STM, field))
+        if current != class_count:
+            setattr(config.MODEL.STM, field, class_count)
+            changed[field] = {"old": current, "new": class_count}
+
+    metadata["changed"] = changed
+    metadata["applied"] = bool(changed)
+    return metadata
+
+
 def set_image_mode(config):
     """Normalize config to the supported image-only runtime."""
 
@@ -76,13 +226,19 @@ def validate_config(config):
         )
 
     if config.DATA.INPUT_TYPE == "image" and config.DATA.NUM_FRAMES != 1:
-        errors.append(f"NUM_FRAMES should be 1 for image mode, got {config.DATA.NUM_FRAMES}")
+        errors.append(
+            f"NUM_FRAMES should be 1 for image mode, got {config.DATA.NUM_FRAMES}"
+        )
 
     if config.SOLVER.IMAGES_PER_BATCH <= 0:
-        errors.append(f"IMAGES_PER_BATCH must be positive, got {config.SOLVER.IMAGES_PER_BATCH}")
+        errors.append(
+            f"IMAGES_PER_BATCH must be positive, got {config.SOLVER.IMAGES_PER_BATCH}"
+        )
 
     if config.TEST.IMAGES_PER_BATCH <= 0:
-        errors.append(f"IMAGES_PER_BATCH must be positive in TEST, got {config.TEST.IMAGES_PER_BATCH}")
+        errors.append(
+            f"IMAGES_PER_BATCH must be positive in TEST, got {config.TEST.IMAGES_PER_BATCH}"
+        )
 
     return len(errors) == 0, errors
 

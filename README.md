@@ -11,6 +11,7 @@ This README documents the active production path, not the older video research h
 - The active runtime supports one detector entrypoint: `AeroLiteDetector` (legacy alias: `STMDetector`).
 - Text prompts are active in the main configs through lightweight class-prototype fusion, not only as offline metadata.
 - Primary runtime entrypoints are `scripts/pipeline.py`, `scripts/validate_dataset.py`, `train_net.py`, `test_net.py`, and `demo_image.py`.
+- Detector class counts are auto-synced from the dataset path at runtime; the active presets are not locked to a fixed class list.
 
 ## Model Overview
 
@@ -249,9 +250,9 @@ Utility script:
 
 ```bash
 python preprocess/build_open_vocab.py \
-  --annotations "data/Aero_dataset/train.txt" "data/Aero_dataset/test.txt" \
-  --out-closed "data/Aero_dataset/annotations/vocab_closed.json" \
-  --out-open "data/Aero_dataset/annotations/vocab_open.json" \
+  --annotations "C:/Users/tsake/OneDrive/Desktop/datasets/Aero_dataset/train.txt" "C:/Users/tsake/OneDrive/Desktop/datasets/Aero_dataset/test.txt" \
+  --out-closed "C:/Users/tsake/OneDrive/Desktop/datasets/Aero_dataset/annotations/vocab_closed.json" \
+  --out-open "C:/Users/tsake/OneDrive/Desktop/datasets/Aero_dataset/annotations/vocab_open.json" \
   --closed-ratio 0.8 \
   --prompt-template "a photo of {label}"
 ```
@@ -309,7 +310,7 @@ Professional local workflow (single command):
 ```bash
 python scripts/pipeline.py \
   --mode run \
-  --data "data/Aero_dataset" \
+  --data "C:/Users/tsake/OneDrive/Desktop/datasets/Aero_dataset" \
   --preset prod \
   --output-dir output/aero_dataset_run \
   --epochs 30 \
@@ -331,7 +332,7 @@ Small-object tiling (train + eval in one run):
 ```bash
 python scripts/pipeline.py \
   --mode run \
-  --data "data/Aero_dataset" \
+  --data "C:/Users/tsake/OneDrive/Desktop/datasets/Aero_dataset" \
   --preset prod \
   --output-dir output/aero_dataset_run_tiled \
   --epochs 30 \
@@ -374,7 +375,7 @@ Stable inference/eval pipeline:
 ```bash
 python scripts/pipeline.py \
   --mode eval \
-  --data "data/Aero_dataset" \
+  --data "C:/Users/tsake/OneDrive/Desktop/datasets/Aero_dataset" \
   --preset prod \
   --output-dir output/aero_dataset_inference \
   --model-weight checkpoints/model_final.pth
@@ -384,7 +385,7 @@ Dataset version freeze (for reproducibility records):
 
 ```bash
 python scripts/freeze_dataset_version.py \
-  --data "data/Aero_dataset" \
+  --data "C:/Users/tsake/OneDrive/Desktop/datasets/Aero_dataset" \
   --out output/dataset_version.json
 ```
 
@@ -409,7 +410,7 @@ Integrated threshold tuning after eval:
 ```bash
 python scripts/pipeline.py \
   --mode eval \
-  --data "data/Aero_dataset" \
+  --data "C:/Users/tsake/OneDrive/Desktop/datasets/Aero_dataset" \
   --preset prod \
   --output-dir output/aero_dataset_inference \
   --model-weight checkpoints/model_final.pth \

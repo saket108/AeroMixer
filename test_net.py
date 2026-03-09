@@ -2,7 +2,7 @@ import argparse
 import os
 
 import torch
-from alphaction.config import cfg
+from alphaction.config import auto_sync_dataset_class_counts, cfg
 from alphaction.dataset import make_data_loader
 from alphaction.engine.inference import inference
 from alphaction.modeling.detector import build_detection_model
@@ -61,6 +61,7 @@ def main():
     # Merge config file.
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
+    class_sync = auto_sync_dataset_class_counts(cfg)
     cfg.freeze()
 
     # Print experimental infos.
@@ -76,6 +77,13 @@ def main():
         cfg.TEST.METRIC,
         cfg.MODEL.BACKBONE.CONV_BODY,
     )
+    if class_sync and class_sync.get("applied"):
+        logger.info(
+            "Auto-synced detector class counts from dataset (%s split): num_classes=%d class_names=%s",
+            class_sync.get("split"),
+            int(class_sync.get("num_classes", 0)),
+            class_sync.get("class_names", []),
+        )
     if args.verbose_startup:
         logger.info(cfg)
         logger.info("Collecting env info (might take some time)")

@@ -7,7 +7,7 @@ import os
 
 import torch
 from torch.utils.collect_env import get_pretty_env_info
-from alphaction.config import cfg, uses_text_branch
+from alphaction.config import auto_sync_dataset_class_counts, cfg, uses_text_branch
 from alphaction.dataset import make_data_loader
 from alphaction.solver import make_lr_scheduler, make_optimizer
 from alphaction.engine.inference import inference
@@ -282,6 +282,7 @@ def main():
     if args.set_split >= 0:
         # Keep split placeholder support for OUTPUT_DIR in custom configs.
         cfg.OUTPUT_DIR = cfg.OUTPUT_DIR.format(args.set_split)
+    class_sync = auto_sync_dataset_class_counts(cfg)
     cfg.freeze()
 
     output_dir = cfg.OUTPUT_DIR
@@ -302,6 +303,13 @@ def main():
         cfg.SOLVER.IMAGES_PER_BATCH,
         cfg.MODEL.BACKBONE.CONV_BODY,
     )
+    if class_sync and class_sync.get("applied"):
+        logger.info(
+            "Auto-synced detector class counts from dataset (%s split): num_classes=%d class_names=%s",
+            class_sync.get("split"),
+            int(class_sync.get("num_classes", 0)),
+            class_sync.get("class_names", []),
+        )
 
     if args.verbose_startup:
         logger.info(args)

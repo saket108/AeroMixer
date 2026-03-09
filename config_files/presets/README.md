@@ -8,4 +8,6 @@ These are the only preset files meant for normal train/eval use:
 `scripts/pipeline.py` defaults to `full`.
 
 Canonical dataset root for the active presets:
-- `data/Aero_dataset`
+- `C:/Users/tsake/OneDrive/Desktop/datasets/Aero_dataset`
+
+Class counts are auto-synced from the dataset at runtime, so these presets are scale recipes, not dataset-specific class configs.
