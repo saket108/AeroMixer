@@ -91,7 +91,9 @@ class TestMultimodalLiteDetector(unittest.TestCase):
         )
 
         self.assertEqual(len(description_features), 1)
-        self.assertEqual(tuple(description_features[0].shape), (1, cfg.MODEL.LITE_TEXT.EMBED_DIM))
+        self.assertEqual(
+            tuple(description_features[0].shape), (1, cfg.MODEL.LITE_TEXT.EMBED_DIM)
+        )
         self.assertEqual(len(description_texts[0]), 1)
         self.assertIn("dent", description_texts[0][0])
         self.assertIn("broad dent near panel seam", description_texts[0][0])
