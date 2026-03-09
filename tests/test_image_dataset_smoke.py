@@ -303,8 +303,12 @@ class TestImageDatasetSmoke(unittest.TestCase):
             valid_dataset = ImageDataset(cfg, split="val")
             test_dataset = ImageDataset(cfg, split="test")
 
-            self.assertEqual(valid_dataset.samples[0]["image_rel"], "valid/images/image_valid.jpg")
-            self.assertEqual(test_dataset.samples[0]["image_rel"], "test/images/image_test.jpg")
+            self.assertEqual(
+                valid_dataset.samples[0]["image_rel"], "valid/images/image_valid.jpg"
+            )
+            self.assertEqual(
+                test_dataset.samples[0]["image_rel"], "test/images/image_test.jpg"
+            )
             self.assertEqual(valid_dataset.class_names[0], "crack")
             self.assertEqual(test_dataset.class_names[0], "dent")
 
