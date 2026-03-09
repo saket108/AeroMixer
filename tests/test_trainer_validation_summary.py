@@ -5,10 +5,24 @@ from alphaction.engine.trainer import (
     _extract_validation_summary,
     _format_epoch_train_summary,
     _format_validation_table_row,
+    _resolve_iteration_logging,
 )
+from alphaction.config import cfg as default_cfg
 
 
 class TestTrainerValidationSummary(unittest.TestCase):
+    def test_iteration_logging_defaults_to_epoch_first(self):
+        cfg = default_cfg.clone()
+        cfg.freeze()
+
+        class DummyModel:
+            def __init__(self, cfg):
+                self.cfg = cfg
+
+        enabled, every = _resolve_iteration_logging(DummyModel(cfg))
+        self.assertFalse(enabled)
+        self.assertEqual(every, 20)
+
     def test_coerce_eval_metrics_accepts_tuple_payload(self):
         metrics = {"PascalBoxes_Precision/mAP@0.5IOU": 0.25}
         out = _coerce_eval_metrics((metrics, {"unused": True}))

@@ -119,7 +119,10 @@ def train(
     if not skip_val:
         dataset_names_val = cfg.DATA.DATASETS
         data_loaders_val, vocabularies_val, _ = make_data_loader(
-            cfg, is_train=False, is_distributed=distributed
+            cfg,
+            is_train=False,
+            is_distributed=distributed,
+            split_override="val",
         )
     else:
         dataset_names_val = []

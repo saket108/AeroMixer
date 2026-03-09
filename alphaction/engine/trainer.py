@@ -62,6 +62,21 @@ def _extract_validation_summary(metrics):
     return summary
 
 
+def _resolve_iteration_logging(model, default_every=20):
+    base_model = _unwrap_model(model)
+    cfg = getattr(base_model, "cfg", None)
+    if cfg is None:
+        return True, int(default_every)
+
+    solver_cfg = getattr(cfg, "SOLVER", None)
+    if solver_cfg is None:
+        return True, int(default_every)
+
+    enabled = bool(getattr(solver_cfg, "LOG_ITERATION_UPDATES", True))
+    every = max(1, int(getattr(solver_cfg, "LOG_ITERATION_EVERY", default_every)))
+    return enabled, every
+
+
 def _num_epochs(max_iter, iter_per_epoch):
     iter_per_epoch = max(1, int(iter_per_epoch))
     return max(1, int((int(max_iter) + iter_per_epoch - 1) // iter_per_epoch))
@@ -292,11 +307,15 @@ def do_train(
     total_epochs = _num_epochs(max_iter, iter_per_epoch)
     val_history = []
     epoch_summary = _init_epoch_summary()
-    printed_epoch_header = False
+    log_iteration_updates, log_iteration_every = _resolve_iteration_logging(model)
 
     model.train()
 
     logger.info("Image Training Mode Enabled")
+    logger.info("Training log style: epoch-first")
+    logger.info(
+        "      Epoch    GPU_mem   box_loss   cls_loss  giou_loss  Instances       Size"
+    )
     if torch.cuda.is_available():
         try:
             torch.cuda.reset_peak_memory_stats()
@@ -363,7 +382,9 @@ def do_train(
         eta_seconds = meters.time.global_avg * (max_iter - iteration)
         eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
 
-        if iteration % 20 == 0 or iteration == max_iter:
+        if log_iteration_updates and (
+            iteration % log_iteration_every == 0 or iteration == max_iter
+        ):
             log_fields = [
                 f"eta: {eta_string}",
                 f"iter: {iteration}/{max_iter}",
@@ -387,11 +408,6 @@ def do_train(
         epoch = max(1, int((iteration + iter_per_epoch - 1) // iter_per_epoch))
         epoch_complete = iteration % iter_per_epoch == 0 or iteration == max_iter
         if epoch_complete:
-            if not printed_epoch_header:
-                logger.info(
-                    "      Epoch    GPU_mem   box_loss   cls_loss  giou_loss  Instances       Size"
-                )
-                printed_epoch_header = True
             logger.info(
                 "".join(_format_epoch_train_summary(epoch, total_epochs, epoch_summary))
             )

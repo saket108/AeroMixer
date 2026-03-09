@@ -835,11 +835,14 @@ class ImageDataset(torch.utils.data.Dataset):
             raise AssertionError(f"Not a supported custom nested JSON file: {ann_file}")
 
         image_records = data.get("images", [])
-        split_aliases = set(self._split_aliases(split))
-        if split == "train":
-            split_aliases = split_aliases.union({"train"})
+        split_name = str(split).strip().lower()
+        split_aliases = set(self._split_aliases(split_name))
+        if split_name == "train":
+            split_aliases = split_aliases.union({"train", "training"})
+        elif split_name in {"val", "valid", "validation"}:
+            split_aliases = split_aliases.union({"val", "valid", "validation"})
         else:
-            split_aliases = split_aliases.union({"val", "valid", "validation", "test"})
+            split_aliases = split_aliases.union({"test", "testing", "evaluation"})
 
         samples = defaultdict(list)
         sample_extras_map = {}
@@ -1234,10 +1237,13 @@ class ImageDataset(torch.utils.data.Dataset):
         if not os.path.isdir(split_dir):
             return []
 
-        if str(split).lower() == "train":
+        split_name = str(split).lower()
+        if split_name == "train":
             candidates = ["train.txt", "trainval.txt"]
+        elif split_name in {"val", "valid", "validation"}:
+            candidates = ["val.txt", "validation.txt"]
         else:
-            candidates = ["val.txt", "test.txt", "validation.txt"]
+            candidates = ["test.txt", "val.txt", "validation.txt"]
         candidates.extend([f"{alias}.txt" for alias in self._split_aliases(split)])
 
         for file_name in candidates:
@@ -1695,8 +1701,10 @@ class ImageDataset(torch.utils.data.Dataset):
         split_name = str(split).lower()
         if split_name == "train":
             return ["train", "training", "stratified_train"]
-        if split_name in ["test", "val", "valid", "validation"]:
-            return ["val", "valid", "validation", "test", "stratified_val"]
+        if split_name in ["val", "valid", "validation"]:
+            return ["val", "valid", "validation", "stratified_val"]
+        if split_name == "test":
+            return ["test", "testing", "evaluation", "stratified_test"]
         return [split_name]
 
     def _find_existing_split_dir(self, base_dir, aliases):

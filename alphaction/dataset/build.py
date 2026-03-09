@@ -101,11 +101,21 @@ def _compute_tile_group_ids(dataset):
 
 
 def make_data_sampler(dataset, shuffle, distributed, cfg=None, is_train=False):
+    tile_grouping_active = False
+    if (
+        is_train
+        and cfg is not None
+        and bool(getattr(cfg.DATALOADER, "TILE_GROUP_BATCHING", False))
+    ):
+        group_ids, tiled_samples = _compute_tile_group_ids(dataset)
+        tile_grouping_active = group_ids is not None and int(tiled_samples) > 1
+
     if distributed:
         if (
             is_train
             and cfg is not None
             and bool(getattr(cfg.DATALOADER, "BALANCED_SAMPLING", False))
+            and not tile_grouping_active
         ):
             logger.warning(
                 "DATALOADER.BALANCED_SAMPLING is enabled but distributed mode is active; "
@@ -120,20 +130,26 @@ def make_data_sampler(dataset, shuffle, distributed, cfg=None, is_train=False):
         and cfg is not None
         and bool(getattr(cfg.DATALOADER, "BALANCED_SAMPLING", False))
     ):
-        image_weights, class_hist = _compute_balanced_image_weights(dataset, cfg)
-        if image_weights is not None:
+        if tile_grouping_active:
             logger.info(
-                "Using WeightedRandomSampler for balanced sampling "
-                "(num_samples=%d, num_classes=%d, class_hist=%s)",
-                len(image_weights),
-                int(len(class_hist)),
-                [int(x) for x in class_hist.tolist()],
+                "DATALOADER.TILE_GROUP_BATCHING takes precedence over BALANCED_SAMPLING "
+                "for tiled training data."
             )
-            return torch.utils.data.WeightedRandomSampler(
-                weights=image_weights,
-                num_samples=len(image_weights),
-                replacement=True,
-            )
+        else:
+            image_weights, class_hist = _compute_balanced_image_weights(dataset, cfg)
+            if image_weights is not None:
+                logger.info(
+                    "Using WeightedRandomSampler for balanced sampling "
+                    "(num_samples=%d, num_classes=%d, class_hist=%s)",
+                    len(image_weights),
+                    int(len(class_hist)),
+                    [int(x) for x in class_hist.tolist()],
+                )
+                return torch.utils.data.WeightedRandomSampler(
+                    weights=image_weights,
+                    num_samples=len(image_weights),
+                    replacement=True,
+                )
 
     if shuffle:
         return torch.utils.data.RandomSampler(dataset)
@@ -205,7 +221,9 @@ def make_batch_data_sampler(
 # DATALOADER
 # --------------------------------------------------------
 
-def make_data_loader(cfg, is_train=True, is_distributed=False, start_iter=0):
+def make_data_loader(
+    cfg, is_train=True, is_distributed=False, start_iter=0, split_override=None
+):
     num_gpus = get_world_size()
 
     if is_train:
@@ -214,14 +232,14 @@ def make_data_loader(cfg, is_train=True, is_distributed=False, start_iter=0):
         images_per_gpu = images_per_batch // num_gpus
         shuffle = True
         drop_last = True
-        split = "train"
+        split = str(split_override or "train")
     else:
         images_per_batch = cfg.TEST.IMAGES_PER_BATCH
         assert images_per_batch % num_gpus == 0
         images_per_gpu = images_per_batch // num_gpus
         shuffle = False
         drop_last = False
-        split = "test"
+        split = str(split_override or "test")
 
     datasets = build_dataset(cfg, split=split)
 

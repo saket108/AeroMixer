@@ -130,6 +130,23 @@ class TestBalancedSampler(unittest.TestCase):
         self.assertIn({"img_a"}, batch_groups)
         self.assertIn({"img_b"}, batch_groups)
 
+    def test_tile_group_batching_overrides_balanced_sampling_for_tiled_data(self):
+        cfg = base_cfg.clone()
+        cfg.defrost()
+        cfg.DATALOADER.TILE_GROUP_BATCHING = True
+        cfg.DATALOADER.BALANCED_SAMPLING = True
+        cfg.freeze()
+
+        ds = _DummyTiledDataset()
+        sampler = make_data_sampler(
+            ds,
+            shuffle=True,
+            distributed=False,
+            cfg=cfg,
+            is_train=True,
+        )
+        self.assertIsInstance(sampler, torch.utils.data.RandomSampler)
+
 
 if __name__ == "__main__":
     unittest.main()
