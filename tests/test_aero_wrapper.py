@@ -24,7 +24,8 @@ class TestAeroWrapper(unittest.TestCase):
                 epochs=30,
                 batch_size=2,
                 num_workers=0,
-                tile_size=640,
+                annotation_format="custom_json",
+                tile_size=0,
                 tile_overlap=0.25,
                 tile_min_cover=0.35,
                 tune_thresholds=False,
@@ -36,6 +37,9 @@ class TestAeroWrapper(unittest.TestCase):
             self.assertIn("--skip-final-test", cmd)
             self.assertIn("--epochs", cmd)
             self.assertNotIn("--resume", cmd)
+            self.assertNotIn("--tile-size", cmd)
+            self.assertIn("DATA.ANNOTATION_FORMAT", cmd)
+            self.assertIn("custom_json", cmd)
 
     def test_train_command_only_resumes_when_requested(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -47,7 +51,8 @@ class TestAeroWrapper(unittest.TestCase):
                 epochs=30,
                 batch_size=2,
                 num_workers=0,
-                tile_size=640,
+                annotation_format="custom_json",
+                tile_size=0,
                 tile_overlap=0.25,
                 tile_min_cover=0.35,
                 tune_thresholds=False,
@@ -67,7 +72,8 @@ class TestAeroWrapper(unittest.TestCase):
                 output_dir="output/aero_train",
                 batch_size=2,
                 num_workers=0,
-                tile_size=640,
+                annotation_format="custom_json",
+                tile_size=0,
                 tile_overlap=0.25,
                 tile_min_cover=0.35,
                 tune_thresholds=True,
@@ -80,6 +86,9 @@ class TestAeroWrapper(unittest.TestCase):
             self.assertIn("eval", cmd)
             self.assertNotIn("--epochs", cmd)
             self.assertNotIn("--skip-final-test", cmd)
+            self.assertNotIn("--tile-size", cmd)
+            self.assertIn("DATA.ANNOTATION_FORMAT", cmd)
+            self.assertIn("custom_json", cmd)
 
 
 if __name__ == "__main__":

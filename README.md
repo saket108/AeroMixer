@@ -30,6 +30,13 @@ For the local Windows setup, this wrapper defaults to:
 - dataset: `C:/Users/tsake/OneDrive/Desktop/datasets/Aero_dataset`
 - smoke output: `output/aero_smoke`
 - train output: `output/aero_train`
+- train/eval annotation path: `custom_json`
+- train/eval tiling: off by default
+
+Flagship multimodal path:
+- `python scripts/aero.py train` now defaults to the non-tiled `custom_json` path.
+- Use tiling only as an explicit experiment, for example:
+  - `python scripts/aero.py train --tile-size 640 --annotation-format yolo`
 
 ## Model Overview
 

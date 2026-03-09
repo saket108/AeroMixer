@@ -42,6 +42,7 @@ def _run(command):
 
 
 def _build_pipeline_command(args, mode):
+    extra_opts = []
     command = [
         sys.executable,
         str(ROOT / "scripts" / "pipeline.py"),
@@ -60,6 +61,8 @@ def _build_pipeline_command(args, mode):
         command.extend(["--epochs", str(args.epochs)])
     if hasattr(args, "batch_size"):
         command.extend(["--batch-size", str(args.batch_size)])
+    if hasattr(args, "annotation_format") and args.annotation_format:
+        extra_opts.extend(["DATA.ANNOTATION_FORMAT", args.annotation_format])
 
     if hasattr(args, "tile_size") and int(args.tile_size) > 0:
         command.extend(
@@ -87,7 +90,9 @@ def _build_pipeline_command(args, mode):
     if str(mode) == "train":
         command.append("--skip-final-test")
     if getattr(args, "extra_opts", None):
-        command.extend(["--extra-opts", *args.extra_opts])
+        extra_opts.extend(args.extra_opts)
+    if extra_opts:
+        command.extend(["--extra-opts", *extra_opts])
     return command
 
 
@@ -139,6 +144,11 @@ def _parse_args():
     smoke.add_argument("--epochs", type=int, default=1)
     smoke.add_argument("--batch-size", type=int, default=1)
     smoke.add_argument("--num-workers", type=int, default=_default_workers())
+    smoke.add_argument(
+        "--annotation-format",
+        choices=["auto", "yolo", "custom_json"],
+        default="auto",
+    )
     smoke.add_argument("--tile-size", type=int, default=0)
     smoke.add_argument("--tile-overlap", type=float, default=0.25)
     smoke.add_argument("--tile-min-cover", type=float, default=0.35)
@@ -155,7 +165,12 @@ def _parse_args():
     train.add_argument("--epochs", type=int, default=30)
     train.add_argument("--batch-size", type=int, default=2)
     train.add_argument("--num-workers", type=int, default=_default_workers())
-    train.add_argument("--tile-size", type=int, default=640)
+    train.add_argument(
+        "--annotation-format",
+        choices=["auto", "yolo", "custom_json"],
+        default="custom_json",
+    )
+    train.add_argument("--tile-size", type=int, default=0)
     train.add_argument("--tile-overlap", type=float, default=0.25)
     train.add_argument("--tile-min-cover", type=float, default=0.35)
     train.add_argument("--skip-val-in-train", action="store_true")
@@ -172,7 +187,12 @@ def _parse_args():
     eval_parser.add_argument("--output-dir", default="output/aero_train")
     eval_parser.add_argument("--batch-size", type=int, default=2)
     eval_parser.add_argument("--num-workers", type=int, default=_default_workers())
-    eval_parser.add_argument("--tile-size", type=int, default=640)
+    eval_parser.add_argument(
+        "--annotation-format",
+        choices=["auto", "yolo", "custom_json"],
+        default="custom_json",
+    )
+    eval_parser.add_argument("--tile-size", type=int, default=0)
     eval_parser.add_argument("--tile-overlap", type=float, default=0.25)
     eval_parser.add_argument("--tile-min-cover", type=float, default=0.35)
     eval_parser.add_argument(
