@@ -1,5 +1,6 @@
 """Image backbones for pure image and lightweight image+text detection."""
 
+import logging
 import hashlib
 import re
 from collections import OrderedDict
@@ -8,6 +9,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+try:
+    from torchvision import models as tv_models
+except ImportError:  # pragma: no cover - optional dependency in some envs
+    tv_models = None
+
+
+logger = logging.getLogger(__name__)
+
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _AEROLITE_VARIANTS = {
@@ -15,21 +24,41 @@ _AEROLITE_VARIANTS = {
         "stem_channels": 32,
         "stage_channels": (64, 128, 256),
         "block_depths": (1, 1, 1),
+        "visual_backbone": "resnet18",
     },
     "aerolite-det-s": {
         "stem_channels": 48,
         "stage_channels": (96, 192, 384),
         "block_depths": (1, 2, 2),
+        "visual_backbone": "resnet34",
     },
     "aerolite-det-b": {
         "stem_channels": 64,
         "stage_channels": (128, 256, 512),
         "block_depths": (2, 2, 2),
+        "visual_backbone": "resnet50",
     },
 }
 
 _SUPPORTED_AEROLITE_VARIANTS = tuple(_AEROLITE_VARIANTS.keys())
 _PUBLIC_AEROLITE_VARIANTS = ("AeroLite-Det-T", "AeroLite-Det-S", "AeroLite-Det-B")
+_TORCHVISION_RESNET_SPECS = {
+    "resnet18": {
+        "builder": "resnet18",
+        "weights_enum": "ResNet18_Weights",
+        "stage_channels": (64, 128, 256, 512),
+    },
+    "resnet34": {
+        "builder": "resnet34",
+        "weights_enum": "ResNet34_Weights",
+        "stage_channels": (64, 128, 256, 512),
+    },
+    "resnet50": {
+        "builder": "resnet50",
+        "weights_enum": "ResNet50_Weights",
+        "stage_channels": (256, 512, 1024, 2048),
+    },
+}
 
 
 def _prepare_image_input(x, source_name):
@@ -66,21 +95,155 @@ class ImageResNetLite(nn.Module):
         if len(stage_channels) != 3 or len(block_depths) != 3:
             raise ValueError("ImageResNetLite expects three stage channels and three stage depths.")
 
-        self.conv1 = nn.Conv2d(3, stem_channels, kernel_size=3, stride=2, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(stem_channels)
-        self.relu = nn.ReLU(inplace=True)
+        self.visual_source = "custom"
+        self.visual_backbone_name = self._resolve_visual_backbone_name(cfg)
+        self.visual_pretrained = bool(
+            getattr(cfg.MODEL.BACKBONE, "VISUAL_PRETRAINED", False)
+        )
+        self.visual_pretrained_loaded = False
 
-        self.block2 = self._make_stage(stem_channels, stage_channels[0], stride=2, depth=block_depths[0])
-        self.block3 = self._make_stage(stage_channels[0], stage_channels[1], stride=2, depth=block_depths[1])
-        self.block4 = self._make_stage(stage_channels[1], stage_channels[2], stride=2, depth=block_depths[2])
+        if self.visual_backbone_name:
+            self._init_torchvision_visual(
+                cfg,
+                stage_channels=stage_channels,
+            )
+        else:
+            self.conv1 = nn.Conv2d(
+                3, stem_channels, kernel_size=3, stride=2, padding=1, bias=False
+            )
+            self.bn1 = nn.BatchNorm2d(stem_channels)
+            self.relu = nn.ReLU(inplace=True)
 
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+            self.block2 = self._make_stage(
+                stem_channels, stage_channels[0], stride=2, depth=block_depths[0]
+            )
+            self.block3 = self._make_stage(
+                stage_channels[0], stage_channels[1], stride=2, depth=block_depths[1]
+            )
+            self.block4 = self._make_stage(
+                stage_channels[1], stage_channels[2], stride=2, depth=block_depths[2]
+            )
+
+            self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.dim_out = int(stage_channels[-1])
         self.dim_embed = int(stage_channels[-1])
         self.pyramid_channels = [int(ch) for ch in stage_channels]
         self.stem_channels = int(stem_channels)
         self.stage_channels = tuple(int(ch) for ch in stage_channels)
         self.block_depths = tuple(int(depth) for depth in block_depths)
+
+    def _resolve_visual_backbone_name(self, cfg):
+        raw_name = str(
+            getattr(cfg.MODEL.BACKBONE, "TORCHVISION_NAME", "auto")
+        ).strip().lower()
+        if raw_name in {"", "none", "custom"}:
+            return ""
+        if raw_name != "auto":
+            if raw_name not in _TORCHVISION_RESNET_SPECS:
+                supported = ", ".join(sorted(_TORCHVISION_RESNET_SPECS))
+                raise ValueError(
+                    f"Unsupported torchvision visual backbone '{raw_name}'. "
+                    f"Supported values: auto, none, {supported}."
+                )
+            return raw_name
+        conv_body = str(getattr(cfg.MODEL.BACKBONE, "CONV_BODY", "")).strip().lower()
+        variant_spec = _AEROLITE_VARIANTS.get(conv_body, {})
+        return str(variant_spec.get("visual_backbone", "")).strip().lower()
+
+    def _make_adapter(self, in_ch, out_ch):
+        if int(in_ch) == int(out_ch):
+            return nn.Identity()
+        return nn.Sequential(
+            nn.Conv2d(int(in_ch), int(out_ch), kernel_size=1, bias=False),
+            nn.BatchNorm2d(int(out_ch)),
+            nn.ReLU(inplace=True),
+        )
+
+    def _build_torchvision_resnet(self, backbone_name):
+        if tv_models is None:
+            raise ImportError(
+                "torchvision is required for AeroLite torchvision visual backbones."
+            )
+        spec = _TORCHVISION_RESNET_SPECS[backbone_name]
+        builder = getattr(tv_models, spec["builder"])
+        weights = None
+        if self.visual_pretrained:
+            weights_enum = getattr(tv_models, spec["weights_enum"], None)
+            if weights_enum is not None:
+                weights = weights_enum.DEFAULT
+
+        try:
+            model = builder(weights=weights)
+            self.visual_pretrained_loaded = weights is not None
+            return model
+        except TypeError:
+            model = builder(pretrained=bool(weights))
+            self.visual_pretrained_loaded = bool(weights)
+            return model
+        except Exception as exc:
+            if weights is None:
+                raise
+            logger.warning(
+                "Failed to load pretrained torchvision weights for %s (%s). "
+                "Falling back to random init.",
+                backbone_name,
+                exc,
+            )
+            self.visual_pretrained_loaded = False
+            try:
+                return builder(weights=None)
+            except TypeError:
+                return builder(pretrained=False)
+
+    def _freeze_visual_trunk(self):
+        for module in [
+            self.conv1,
+            self.bn1,
+            self.layer1,
+            self.layer2,
+            self.layer3,
+            self.layer4,
+        ]:
+            for param in module.parameters():
+                param.requires_grad = False
+
+    def _init_torchvision_visual(self, cfg, stage_channels):
+        backbone_name = self.visual_backbone_name
+        model = self._build_torchvision_resnet(backbone_name)
+        spec = _TORCHVISION_RESNET_SPECS[backbone_name]
+
+        self.visual_source = "torchvision"
+        self.conv1 = model.conv1
+        self.bn1 = model.bn1
+        self.relu = model.relu
+        self.maxpool = model.maxpool
+        self.layer1 = model.layer1
+        self.layer2 = model.layer2
+        self.layer3 = model.layer3
+        self.layer4 = model.layer4
+        self.avgpool = model.avgpool
+
+        in_l1, in_l2, in_l3, in_l4 = spec["stage_channels"]
+        self.stage1_adapter = self._make_adapter(in_l1, stage_channels[0])
+        self.stage2_adapter = self._make_adapter(in_l2, stage_channels[1])
+        self.stage3_adapter = self._make_adapter(in_l3, stage_channels[2])
+        self.cls_proj = nn.Sequential(
+            nn.Linear(int(in_l4), int(stage_channels[-1])),
+            nn.LayerNorm(int(stage_channels[-1])),
+            nn.GELU(),
+        )
+
+        if bool(getattr(cfg.MODEL.BACKBONE, "FREEZE_PRETRAINED_VISUAL", False)) and (
+            self.visual_pretrained_loaded
+        ):
+            self._freeze_visual_trunk()
+
+        logger.info(
+            "AeroLite visual trunk: torchvision %s (pretrained=%s, loaded=%s)",
+            backbone_name,
+            self.visual_pretrained,
+            self.visual_pretrained_loaded,
+        )
 
     def _make_block(self, in_ch, out_ch, stride=1):
         return nn.Sequential(
@@ -103,6 +266,24 @@ class ImageResNetLite(nn.Module):
 
     def forward_multiscale(self, x):
         x = self._prepare_input(x)
+
+        if self.visual_source == "torchvision":
+            x = self.relu(self.bn1(self.conv1(x)))
+            x = self.maxpool(x)
+
+            c2 = self.layer1(x)
+            c3_base = self.layer2(c2)
+            c4_base = self.layer3(c3_base)
+            c5_base = self.layer4(c4_base)
+
+            c3 = self.stage1_adapter(c2)
+            c4 = self.stage2_adapter(c3_base)
+            c5 = self.stage3_adapter(c4_base)
+
+            cls_feat = self.avgpool(c5_base)
+            cls_feat = torch.flatten(cls_feat, 1)
+            cls_feat = self.cls_proj(cls_feat)
+            return (c3, c4, c5), cls_feat
 
         x = self.relu(self.bn1(self.conv1(x)))
         c3 = self.block2(x)

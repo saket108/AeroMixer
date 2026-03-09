@@ -202,9 +202,9 @@ def _progress_postfix(epoch_summary, optimizer):
         "giou": f"{_avg_epoch_loss(epoch_summary, 'loss_giou'):.3f}",
         "lr": f"{optimizer.param_groups[0]['lr']:.2e}",
     }
-    if "loss_desc_align" in epoch_summary["loss_sums"]:
+    if abs(float(epoch_summary["loss_sums"].get("loss_desc_align", 0.0))) > 1e-8:
         postfix["desc"] = f"{_avg_epoch_loss(epoch_summary, 'loss_desc_align'):.3f}"
-    if "loss_tile_consistency" in epoch_summary["loss_sums"]:
+    if abs(float(epoch_summary["loss_sums"].get("loss_tile_consistency", 0.0))) > 1e-8:
         postfix["tile"] = (
             f"{_avg_epoch_loss(epoch_summary, 'loss_tile_consistency'):.3f}"
         )
