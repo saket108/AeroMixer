@@ -53,6 +53,31 @@ class _DummyTiledDataset:
         return len(self.samples)
 
 
+class _DummySingleTileDataset:
+    def __init__(self):
+        self.samples = [
+            {
+                "labels": np.array([0], dtype=np.int64),
+                "tile_meta": {"is_tiled": True, "base_image_id": "img_a"},
+            },
+            {
+                "labels": np.array([0], dtype=np.int64),
+                "tile_meta": {"is_tiled": True, "base_image_id": "img_b"},
+            },
+            {
+                "labels": np.array([1], dtype=np.int64),
+                "tile_meta": {"is_tiled": True, "base_image_id": "img_c"},
+            },
+            {
+                "labels": np.array([1], dtype=np.int64),
+                "tile_meta": {"is_tiled": True, "base_image_id": "img_d"},
+            },
+        ]
+
+    def __len__(self):
+        return len(self.samples)
+
+
 class TestBalancedSampler(unittest.TestCase):
     def test_weighted_sampler_prioritizes_rare_class(self):
         cfg = base_cfg.clone()
@@ -98,6 +123,28 @@ class TestBalancedSampler(unittest.TestCase):
         self.assertEqual(group_ids[2], group_ids[3])
         self.assertNotEqual(group_ids[1], group_ids[2])
         self.assertNotEqual(group_ids[3], group_ids[4])
+
+    def test_compute_tile_group_ids_disables_grouping_for_single_tile_images(self):
+        ds = _DummySingleTileDataset()
+        group_ids, tiled_samples = _compute_tile_group_ids(ds)
+        self.assertIsNone(group_ids)
+        self.assertEqual(tiled_samples, 4)
+
+    def test_single_tile_images_fall_back_to_standard_batching(self):
+        cfg = base_cfg.clone()
+        cfg.defrost()
+        cfg.DATALOADER.TILE_GROUP_BATCHING = True
+        cfg.freeze()
+
+        ds = _DummySingleTileDataset()
+        sampler = make_data_sampler(
+            ds,
+            shuffle=True,
+            distributed=False,
+            cfg=cfg,
+            is_train=True,
+        )
+        self.assertIsInstance(sampler, torch.utils.data.RandomSampler)
 
     def test_tile_group_batching_keeps_sibling_tiles_together(self):
         cfg = base_cfg.clone()

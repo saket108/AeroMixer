@@ -75,27 +75,49 @@ def _compute_tile_group_ids(dataset):
     if not isinstance(samples, list) or len(samples) == 0:
         return None, 0
 
+    base_counts = {}
+    for sample in samples:
+        tile_meta = sample.get("tile_meta") if isinstance(sample, dict) else None
+        if not isinstance(tile_meta, dict) or not bool(tile_meta.get("is_tiled", False)):
+            continue
+        base_id = str(tile_meta.get("base_image_id", "")).strip()
+        if not base_id:
+            continue
+        base_counts[base_id] = int(base_counts.get(base_id, 0)) + 1
+
     group_ids = []
     group_lookup = {}
     next_group_id = 0
     tiled_samples = 0
+    fallback_group_id = None
+    repeated_tiled_samples = sum(
+        count for count in base_counts.values() if int(count) > 1
+    )
 
-    for sample_idx, sample in enumerate(samples):
+    for sample in samples:
         tile_meta = sample.get("tile_meta") if isinstance(sample, dict) else None
         base_id = None
         if isinstance(tile_meta, dict) and bool(tile_meta.get("is_tiled", False)):
             base_id = str(tile_meta.get("base_image_id", "")).strip() or None
         if base_id is not None:
             tiled_samples += 1
-            if base_id not in group_lookup:
-                group_lookup[base_id] = next_group_id
-                next_group_id += 1
-            group_ids.append(group_lookup[base_id])
+            if int(base_counts.get(base_id, 0)) > 1:
+                if base_id not in group_lookup:
+                    group_lookup[base_id] = next_group_id
+                    next_group_id += 1
+                group_ids.append(group_lookup[base_id])
+            else:
+                if fallback_group_id is None:
+                    fallback_group_id = next_group_id
+                    next_group_id += 1
+                group_ids.append(fallback_group_id)
         else:
-            group_ids.append(next_group_id)
-            next_group_id += 1
+            if fallback_group_id is None:
+                fallback_group_id = next_group_id
+                next_group_id += 1
+            group_ids.append(fallback_group_id)
 
-    if tiled_samples <= 1:
+    if repeated_tiled_samples <= 1:
         return None, tiled_samples
     return group_ids, tiled_samples
 
