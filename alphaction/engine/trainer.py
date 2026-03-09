@@ -5,8 +5,10 @@ import os
 import time
 
 import torch
+from tqdm import tqdm
 
 from alphaction.engine.inference import inference
+from alphaction.utils.comm import is_main_process
 from alphaction.utils.metric_logger import MetricLogger
 from alphaction.utils.comm import reduce_dict
 
@@ -75,6 +77,20 @@ def _resolve_iteration_logging(model, default_every=20):
     enabled = bool(getattr(solver_cfg, "LOG_ITERATION_UPDATES", True))
     every = max(1, int(getattr(solver_cfg, "LOG_ITERATION_EVERY", default_every)))
     return enabled, every
+
+
+def _resolve_progress_bar(model, default_enabled=True):
+    base_model = _unwrap_model(model)
+    cfg = getattr(base_model, "cfg", None)
+    if cfg is None:
+        return bool(default_enabled and is_main_process())
+
+    solver_cfg = getattr(cfg, "SOLVER", None)
+    if solver_cfg is None:
+        return bool(default_enabled and is_main_process())
+
+    enabled = bool(getattr(solver_cfg, "PROGRESS_BAR", default_enabled))
+    return bool(enabled and is_main_process())
 
 
 def _num_epochs(max_iter, iter_per_epoch):
@@ -158,6 +174,41 @@ def _format_epoch_train_summary(epoch, total_epochs, epoch_summary):
         f"{avg_instances:>10d}",
         f"{str(epoch_summary.get('size_label', '')):>10}",
     ]
+
+
+def _epoch_iteration_bounds(epoch, max_iter, iter_per_epoch):
+    epoch_start = max(1, ((int(epoch) - 1) * int(iter_per_epoch)) + 1)
+    epoch_end = min(int(max_iter), int(epoch) * int(iter_per_epoch))
+    epoch_total = max(1, epoch_end - epoch_start + 1)
+    return epoch_start, epoch_end, epoch_total
+
+
+def _build_epoch_progress_bar(epoch, total_epochs, max_iter, iter_per_epoch, initial=0):
+    _, _, epoch_total = _epoch_iteration_bounds(epoch, max_iter, iter_per_epoch)
+    initial = max(0, min(int(initial), int(epoch_total)))
+    return tqdm(
+        total=epoch_total,
+        initial=initial,
+        desc=f"Epoch {int(epoch)}/{int(total_epochs)}",
+        dynamic_ncols=True,
+        leave=True,
+    )
+
+
+def _progress_postfix(epoch_summary, optimizer):
+    postfix = {
+        "box": f"{_avg_epoch_loss(epoch_summary, 'loss_bbox'):.3f}",
+        "cls": f"{_avg_epoch_loss(epoch_summary, 'loss_ce'):.3f}",
+        "giou": f"{_avg_epoch_loss(epoch_summary, 'loss_giou'):.3f}",
+        "lr": f"{optimizer.param_groups[0]['lr']:.2e}",
+    }
+    if "loss_desc_align" in epoch_summary["loss_sums"]:
+        postfix["desc"] = f"{_avg_epoch_loss(epoch_summary, 'loss_desc_align'):.3f}"
+    if "loss_tile_consistency" in epoch_summary["loss_sums"]:
+        postfix["tile"] = (
+            f"{_avg_epoch_loss(epoch_summary, 'loss_tile_consistency'):.3f}"
+        )
+    return postfix
 
 
 def _dataset_image_instance_counts(data_loader_val):
@@ -308,6 +359,9 @@ def do_train(
     val_history = []
     epoch_summary = _init_epoch_summary()
     log_iteration_updates, log_iteration_every = _resolve_iteration_logging(model)
+    progress_bar_enabled = _resolve_progress_bar(model)
+    current_epoch = max(1, int((start_iter + iter_per_epoch) // iter_per_epoch))
+    epoch_progress = None
 
     model.train()
 
@@ -316,6 +370,18 @@ def do_train(
     logger.info(
         "      Epoch    GPU_mem   box_loss   cls_loss  giou_loss  Instances       Size"
     )
+    if progress_bar_enabled:
+        epoch_start_iteration, _, _ = _epoch_iteration_bounds(
+            current_epoch, max_iter, iter_per_epoch
+        )
+        initial_completed = max(0, start_iter - (epoch_start_iteration - 1))
+        epoch_progress = _build_epoch_progress_bar(
+            current_epoch,
+            total_epochs,
+            max_iter,
+            iter_per_epoch,
+            initial=initial_completed,
+        )
     if torch.cuda.is_available():
         try:
             torch.cuda.reset_peak_memory_stats()
@@ -381,8 +447,14 @@ def do_train(
 
         eta_seconds = meters.time.global_avg * (max_iter - iteration)
         eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
+        epoch = max(1, int((iteration + iter_per_epoch - 1) // iter_per_epoch))
+        epoch_complete = iteration % iter_per_epoch == 0 or iteration == max_iter
 
-        if log_iteration_updates and (
+        if epoch_progress is not None:
+            epoch_progress.update(1)
+            epoch_progress.set_postfix(_progress_postfix(epoch_summary, optimizer))
+
+        if log_iteration_updates and not progress_bar_enabled and (
             iteration % log_iteration_every == 0 or iteration == max_iter
         ):
             log_fields = [
@@ -405,9 +477,10 @@ def do_train(
                     log_fields.append(f"{key}: {meters.meters[key].avg:.4f}")
             logger.info(meters.delimiter.join(log_fields))
 
-        epoch = max(1, int((iteration + iter_per_epoch - 1) // iter_per_epoch))
-        epoch_complete = iteration % iter_per_epoch == 0 or iteration == max_iter
         if epoch_complete:
+            if epoch_progress is not None:
+                epoch_progress.close()
+                epoch_progress = None
             logger.info(
                 "".join(_format_epoch_train_summary(epoch, total_epochs, epoch_summary))
             )
@@ -455,9 +528,17 @@ def do_train(
                     torch.cuda.reset_peak_memory_stats()
                 except Exception:
                     pass
+            if progress_bar_enabled and iteration < max_iter:
+                current_epoch = min(total_epochs, int(epoch) + 1)
+                epoch_progress = _build_epoch_progress_bar(
+                    current_epoch, total_epochs, max_iter, iter_per_epoch
+                )
 
         if iteration == max_iter:
             checkpointer.save("model_final", **arguments)
+
+    if epoch_progress is not None:
+        epoch_progress.close()
 
     # --------------------------------------------------------
     # END TRAIN
