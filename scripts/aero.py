@@ -28,8 +28,7 @@ def _require_dataset(path_str):
     dataset = Path(path_str or "").expanduser()
     if not dataset:
         raise SystemExit(
-            "Dataset path is required. Use --data or create "
-            f"{DEFAULT_DATASET}."
+            "Dataset path is required. Use --data or create " f"{DEFAULT_DATASET}."
         )
     if not dataset.exists():
         raise SystemExit(f"Dataset not found: {dataset}")
@@ -142,7 +141,9 @@ def _parse_args():
     smoke.add_argument("--skip-val-in-train", action="store_true")
     smoke.add_argument("--extra-opts", nargs=argparse.REMAINDER, default=[])
 
-    train = sub.add_parser("train", help="Main training run with epoch validation only.")
+    train = sub.add_parser(
+        "train", help="Main training run with epoch validation only."
+    )
     train.add_argument("--data", default=_default_dataset())
     train.add_argument("--preset", choices=["lite", "full", "prod"], default="prod")
     train.add_argument("--output-dir", default="output/aero_train")
@@ -168,7 +169,9 @@ def _parse_args():
     eval_parser.add_argument("--tile-size", type=int, default=640)
     eval_parser.add_argument("--tile-overlap", type=float, default=0.25)
     eval_parser.add_argument("--tile-min-cover", type=float, default=0.35)
-    eval_parser.add_argument("--tune-thresholds", dest="tune_thresholds", action="store_true")
+    eval_parser.add_argument(
+        "--tune-thresholds", dest="tune_thresholds", action="store_true"
+    )
     eval_parser.add_argument(
         "--no-tune-thresholds", dest="tune_thresholds", action="store_false"
     )
